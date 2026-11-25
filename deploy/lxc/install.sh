@@ -17,8 +17,9 @@ if [ ! -f /etc/noc-bot/env ]; then
 LLM_TOKEN=
 LAYA_SVC_TOKEN=
 NOC_BOT_TEACHER_TOKEN=
-SLACK_WEBHOOK_URL=
-# SLACK_BOT_TOKEN=
+SLACK_BOT_TOKEN=
+SLACK_APP_TOKEN=
+# SLACK_WEBHOOK_URL=   (only without the Slack App)
 ENV
   chgrp noc-bot /etc/noc-bot/env && chmod 0640 /etc/noc-bot/env
 fi

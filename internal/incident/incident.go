@@ -161,3 +161,27 @@ func short(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+// ByID finds an incident by id (open or resolved).
+func (m *Manager) ByID(id string) (Incident, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, in := range m.byKey {
+		if in.ID == id {
+			return *in, true
+		}
+	}
+	return Incident{}, false
+}
+
+// ByThread finds the incident whose Slack thread is ts.
+func (m *Manager) ByThread(ts string) (Incident, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, in := range m.byKey {
+		if in.Thread != "" && in.Thread == ts {
+			return *in, true
+		}
+	}
+	return Incident{}, false
+}

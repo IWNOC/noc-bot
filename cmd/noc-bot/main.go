@@ -19,6 +19,7 @@ import (
 	"github.com/IWNOC/noc-bot/internal/laya"
 	"github.com/IWNOC/noc-bot/internal/llm"
 	"github.com/IWNOC/noc-bot/internal/notify"
+	"github.com/IWNOC/noc-bot/internal/slackapp"
 	"github.com/IWNOC/noc-bot/internal/store"
 	"github.com/IWNOC/noc-bot/internal/teacher"
 )
@@ -53,7 +54,11 @@ func run(cfgPath string, log *slog.Logger) error {
 		lm = llm.New(cfg.LLM.URL, os.Getenv(cfg.LLM.TokenEnv), cfg.LLM.Model, cfg.LLM.Timeout)
 	}
 	var nt notify.Notifier = notify.Log{L: log}
+	var app *slackapp.App
 	switch {
+	case os.Getenv("SLACK_BOT_TOKEN") != "" && os.Getenv("SLACK_APP_TOKEN") != "" && cfg.Slack.Channel != "":
+		app = slackapp.New(os.Getenv("SLACK_BOT_TOKEN"), os.Getenv("SLACK_APP_TOKEN"), cfg.Slack.Channel, log)
+		nt = app
 	case os.Getenv("SLACK_BOT_TOKEN") != "" && cfg.Slack.Channel != "":
 		nt = notify.Bot{Token: os.Getenv("SLACK_BOT_TOKEN"), Channel: cfg.Slack.Channel}
 	case cfg.Slack.WebhookEnv != "" && os.Getenv(cfg.Slack.WebhookEnv) != "":
@@ -68,6 +73,14 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if app != nil {
+		app.Teams = b.TeamNames
+		go func() {
+			if err := app.Run(ctx, b); err != nil && ctx.Err() == nil {
+				log.Error("slack app stopped", "err", err)
+			}
+		}()
+	}
 
 	in := ingest.NewServer(20000, log)
 	if cfg.Listen.TCP != "" {

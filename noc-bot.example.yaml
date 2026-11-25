@@ -45,8 +45,11 @@ llm:
   token_env: LLM_TOKEN
 
 slack:
-  webhook_env: SLACK_WEBHOOK_URL   # or set SLACK_BOT_TOKEN and channel for threads
-  channel: ""
+  # Slack App (deploy/slack-app-manifest.yaml): set SLACK_BOT_TOKEN (xoxb-) and SLACK_APP_TOKEN (xapp-)
+  # and the channel id to get threads, answer buttons, comments and @noc-bot requests.
+  # Without the app, SLACK_WEBHOOK_URL posts plain alerts only.
+  webhook_env: SLACK_WEBHOOK_URL
+  channel: ""   # channel id, e.g. C0123ABCD
 
 store:
   path: /data/noc-bot.db

@@ -1,0 +1,237 @@
+// Package slackapp connects noc-bot to Slack as an app over Socket Mode: it posts alerts with
+// answer buttons, and passes back what people do (buttons, emoji, thread replies, @mentions).
+// Socket Mode dials out to Slack, so noc-bot needs no inbound port.
+package slackapp
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
+	"github.com/slack-go/slack/socketmode"
+)
+
+// Handler is what noc-bot does with people's input. Each call runs in its own goroutine.
+type Handler interface {
+	// OnAnswer: a button on an alert. value is the option for selects ("l2l3"), empty otherwise.
+	OnAnswer(ctx context.Context, incidentID, action, value, user string) string
+	// OnReaction: an emoji added to one of noc-bot's messages.
+	OnReaction(ctx context.Context, messageTS, emoji, user string)
+	// OnThreadReply: a person wrote in a thread noc-bot started.
+	OnThreadReply(ctx context.Context, threadTS, text, user string)
+	// OnMention: "@noc-bot ..." anywhere. thread is the thread to answer in.
+	OnMention(ctx context.Context, channel, thread, text, user string)
+	// OnProposal: a person accepted or rejected something noc-bot proposed to learn.
+	OnProposal(ctx context.Context, proposalID string, accept bool, user string) string
+}
+
+// Action ids on alert and proposal messages.
+const (
+	ActRight   = "nb_right"
+	ActWrong   = "nb_wrong"
+	ActSevUp   = "nb_sev_up"
+	ActSevDown = "nb_sev_down"
+	ActTeam    = "nb_team"
+	ActAccept  = "nb_accept"
+	ActReject  = "nb_reject"
+)
+
+// App is the Slack app.
+type App struct {
+	API     *slack.Client
+	SM      *socketmode.Client
+	Channel string
+	Teams   func() []string // team ids for the "担当違う" menu
+	Log     *slog.Logger
+	h       Handler
+	botUser string
+}
+
+// New makes an app. botToken is xoxb-..., appToken xapp-... (Socket Mode).
+func New(botToken, appToken, channel string, log *slog.Logger) *App {
+	api := slack.New(botToken, slack.OptionAppLevelToken(appToken))
+	return &App{API: api, SM: socketmode.New(api), Channel: channel, Log: log}
+}
+
+// Post implements notify.Notifier for plain messages.
+func (a *App) Post(ctx context.Context, text, thread string) (string, error) {
+	opts := []slack.MsgOption{slack.MsgOptionText(text, false), slack.MsgOptionDisableLinkUnfurl()}
+	if thread != "" {
+		opts = append(opts, slack.MsgOptionTS(thread))
+	}
+	_, ts, err := a.API.PostMessageContext(ctx, a.Channel, opts...)
+	return ts, err
+}
+
+// PostIncident posts an alert with answer buttons. It returns the message ts (the thread).
+func (a *App) PostIncident(ctx context.Context, incidentID, text, thread string) (string, error) {
+	blocks := []slack.Block{
+		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, clip(text, 2900), false, false), nil, nil),
+		a.answerButtons(incidentID),
+		slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType,
+			"判定するとAIの学習に使われます。理由やこの件の事情は、このスレッドに書いてください。", false, false)),
+	}
+	opts := []slack.MsgOption{slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionDisableLinkUnfurl()}
+	if thread != "" {
+		opts = append(opts, slack.MsgOptionTS(thread))
+	}
+	_, ts, err := a.API.PostMessageContext(ctx, a.Channel, opts...)
+	return ts, err
+}
+
+func (a *App) answerButtons(incidentID string) *slack.ActionBlock {
+	btn := func(id, label string, style slack.Style) *slack.ButtonBlockElement {
+		b := slack.NewButtonBlockElement(id, incidentID, slack.NewTextBlockObject(slack.PlainTextType, label, true, false))
+		if style != "" {
+			b.Style = style
+		}
+		return b
+	}
+	elems := []slack.BlockElement{
+		btn(ActRight, "✅ 合っている", slack.StylePrimary),
+		btn(ActWrong, "❌ 誤検知", slack.StyleDanger),
+		btn(ActSevUp, "🔼 もっと重要", ""),
+		btn(ActSevDown, "🔽 そこまでではない", ""),
+	}
+	if a.Teams != nil {
+		var opts []*slack.OptionBlockObject
+		for _, t := range a.Teams() {
+			opts = append(opts, slack.NewOptionBlockObject(incidentID+"|"+t, slack.NewTextBlockObject(slack.PlainTextType, t, false, false), nil))
+		}
+		if len(opts) > 0 {
+			sel := slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "担当違う", false, false), ActTeam, opts...)
+			elems = append(elems, sel)
+		}
+	}
+	return slack.NewActionBlock("nb_answers_"+incidentID, elems...)
+}
+
+// PostProposal posts a "should I learn this?" card in a thread of the alert channel.
+func (a *App) PostProposal(ctx context.Context, thread, proposalID, text string) error {
+	return a.PostProposalIn(ctx, a.Channel, thread, proposalID, text)
+}
+
+// PostProposalIn posts the card in any channel (where a request was made).
+func (a *App) PostProposalIn(ctx context.Context, channel, thread, proposalID, text string) error {
+	if channel == "" {
+		channel = a.Channel
+	}
+	blocks := []slack.Block{
+		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, clip(text, 2900), false, false), nil, nil),
+		slack.NewActionBlock("nb_proposal_"+proposalID,
+			withStyle(slack.NewButtonBlockElement(ActAccept, proposalID, slack.NewTextBlockObject(slack.PlainTextType, "登録", false, false)), slack.StylePrimary),
+			slack.NewButtonBlockElement(ActReject, proposalID, slack.NewTextBlockObject(slack.PlainTextType, "却下", false, false))),
+	}
+	_, _, err := a.API.PostMessageContext(ctx, channel, slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionTS(thread))
+	return err
+}
+
+// PostIn posts plain text to a channel/thread other than the default (answers to mentions).
+func (a *App) PostIn(ctx context.Context, channel, thread, text string) error {
+	opts := []slack.MsgOption{slack.MsgOptionText(text, false), slack.MsgOptionDisableLinkUnfurl()}
+	if thread != "" {
+		opts = append(opts, slack.MsgOptionTS(thread))
+	}
+	_, _, err := a.API.PostMessageContext(ctx, channel, opts...)
+	return err
+}
+
+func withStyle(b *slack.ButtonBlockElement, s slack.Style) *slack.ButtonBlockElement {
+	b.Style = s
+	return b
+}
+
+// Run connects and dispatches events until ctx is done.
+func (a *App) Run(ctx context.Context, h Handler) error {
+	a.h = h
+	if r, err := a.API.AuthTestContext(ctx); err != nil {
+		return fmt.Errorf("slack auth: %w", err)
+	} else {
+		a.botUser = r.UserID
+		a.Log.Info("slack connected", "team", r.Team, "bot", r.User)
+	}
+	go func() {
+		for evt := range a.SM.Events {
+			switch evt.Type {
+			case socketmode.EventTypeEventsAPI:
+				a.SM.Ack(*evt.Request)
+				if ev, ok := evt.Data.(slackevents.EventsAPIEvent); ok {
+					go a.onEvent(ctx, ev)
+				}
+			case socketmode.EventTypeInteractive:
+				cb, ok := evt.Data.(slack.InteractionCallback)
+				a.SM.Ack(*evt.Request)
+				if ok {
+					go a.onInteraction(ctx, cb)
+				}
+			case socketmode.EventTypeConnectionError:
+				a.Log.Warn("slack connection error")
+			}
+		}
+	}()
+	return a.SM.RunContext(ctx)
+}
+
+func (a *App) onEvent(ctx context.Context, ev slackevents.EventsAPIEvent) {
+	switch e := ev.InnerEvent.Data.(type) {
+	case *slackevents.AppMentionEvent:
+		thread := e.ThreadTimeStamp
+		if thread == "" {
+			thread = e.TimeStamp
+		}
+		a.h.OnMention(ctx, e.Channel, thread, e.Text, e.User)
+	case *slackevents.MessageEvent:
+		// people's replies in threads; ignore bots (including ourselves), edits and mentions
+		// (mentions arrive as app_mention too)
+		if e.BotID != "" || e.User == "" || e.User == a.botUser || e.SubType != "" || e.ThreadTimeStamp == "" {
+			return
+		}
+		if a.botUser != "" && strings.Contains(e.Text, "<@"+a.botUser+">") {
+			return
+		}
+		a.h.OnThreadReply(ctx, e.ThreadTimeStamp, e.Text, e.User)
+	case *slackevents.ReactionAddedEvent:
+		if e.User == a.botUser {
+			return
+		}
+		a.h.OnReaction(ctx, e.Item.Timestamp, e.Reaction, e.User)
+	}
+}
+
+func (a *App) onInteraction(ctx context.Context, cb slack.InteractionCallback) {
+	if cb.Type != slack.InteractionTypeBlockActions {
+		return
+	}
+	for _, act := range cb.ActionCallback.BlockActions {
+		var reply string
+		switch act.ActionID {
+		case ActRight, ActWrong, ActSevUp, ActSevDown:
+			reply = a.h.OnAnswer(ctx, act.Value, act.ActionID, "", cb.User.ID)
+		case ActTeam:
+			inc, team, _ := strings.Cut(act.SelectedOption.Value, "|")
+			reply = a.h.OnAnswer(ctx, inc, act.ActionID, team, cb.User.ID)
+		case ActAccept, ActReject:
+			reply = a.h.OnProposal(ctx, act.Value, act.ActionID == ActAccept, cb.User.ID)
+		}
+		if reply != "" {
+			thread := cb.Message.ThreadTimestamp
+			if thread == "" {
+				thread = cb.Message.Timestamp
+			}
+			if err := a.PostIn(ctx, cb.Channel.ID, thread, reply); err != nil {
+				a.Log.Warn("slack reply", "err", err)
+			}
+		}
+	}
+}
+
+func clip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}

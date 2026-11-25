@@ -90,6 +90,17 @@ func (b *Bot) Tools() []llm.Tool {
 				}
 				return sb.String(), nil
 			}},
+		{Name: "site_notes", Description: "Facts about the network and past causes/fixes that operators confirmed in Slack.", Parameters: obj(map[string]any{}),
+			Run: func(ctx context.Context, _ json.RawMessage) (string, error) {
+				notes, err := b.Store.Notes(ctx, 50, "fact", "resolution")
+				if err != nil {
+					return "", err
+				}
+				if len(notes) == 0 {
+					return "no confirmed notes yet", nil
+				}
+				return strings.Join(notes, "\n"), nil
+			}},
 		{Name: "known_issues", Description: "Accepted, known issues that should not alert by themselves.", Parameters: obj(map[string]any{}),
 			Run: func(context.Context, json.RawMessage) (string, error) {
 				var sb strings.Builder

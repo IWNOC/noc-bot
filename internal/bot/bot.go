@@ -49,6 +49,9 @@ type Bot struct {
 	mu       sync.Mutex
 	examples map[string][]string // template id -> recent raw lines
 	judged   map[string]bool     // template ids the line desk has decided or that are queued for it
+	teams    map[string]config.Team
+	senders  []config.Sender // added from Slack; checked before the config file's
+	props    map[string]*proposal
 	Now      func() time.Time
 }
 
@@ -61,7 +64,12 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	}
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
-		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, Now: time.Now}
+		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, Now: time.Now,
+		teams: map[string]config.Team{}, props: map[string]*proposal{}}
+	for k, v := range cfg.Teams {
+		b.teams[k] = v
+	}
+	b.loadLearned(context.Background())
 	if done, err := st.Subjects(context.Background(), "line"); err == nil {
 		b.judged = done
 	}
@@ -177,7 +185,7 @@ func (b *Bot) saveTemplates(ctx context.Context) {
 
 // open enriches a new incident (team, LLM note, laya incident desk) and posts it.
 func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
-	sender := b.Cfg.SenderFor(s.From, s.Host)
+	sender := b.senderFor(s.From, s.Host)
 	team := sender.Team
 	page := s.Kind == rules.KindSilence || s.Level == stats.LevelStopped // a service going quiet pages
 	sev := -1
@@ -232,10 +240,17 @@ func trusted(a laya.Answer) bool {
 
 func (b *Bot) post(ctx context.Context, ev incident.Event) {
 	mention := ""
-	if t, ok := b.Cfg.Teams[ev.Incident.Team]; ok {
+	if t, ok := b.team(ev.Incident.Team); ok {
 		mention = t.Mention
 	}
-	ts, err := b.Notify.Post(ctx, notify.Render(ev, mention), ev.Incident.Thread)
+	text := notify.Render(ev, mention)
+	var ts string
+	var err error
+	if ip, ok := b.Notify.(IncidentPoster); ok && ev.Kind == incident.EvOpened {
+		ts, err = ip.PostIncident(ctx, ev.Incident.ID, text, ev.Incident.Thread)
+	} else {
+		ts, err = b.Notify.Post(ctx, text, ev.Incident.Thread)
+	}
 	if err != nil {
 		b.Log.Error("slack post", "incident", ev.Incident.ID, "err", err)
 		return
@@ -275,7 +290,7 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 	now := b.Now()
 	meta, _ := b.Rules.Template(s.TplID)
 	info, _ := b.Stats.Get(stats.Key{Kind: "template", ID: s.TplID}, now)
-	sender := b.Cfg.SenderFor(meta.From, meta.Host)
+	sender := b.senderFor(meta.From, meta.Host)
 	known := b.Rules.Covering(meta, now)
 	text := statebuilder.LineState(statebuilder.Line{Template: meta.Text, Example: meta.Example, Program: meta.Program,
 		Sender: sender, Host: meta.Host, Stats: info, Known: known, Related: b.Incidents.Related("odd:"+s.TplID, now), Now: now})

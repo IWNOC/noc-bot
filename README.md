@@ -61,10 +61,22 @@ LAYA_SVC_DESKS=./desks LAYA_SVC_WORKDIR=./state LAYA_SVC_HOST=0.0.0.0 python -m 
 Desks start in **shadow mode**: the teacher answers every question and laya is measured against it,
 so `GET /v1/desks/<desk>/report` shows how often laya would have been right before it answers alone.
 
+## Slack
+
+Create the app from `deploy/slack-app-manifest.yaml`, install it, invite `@noc-bot` to the alert channel,
+and set `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `slack.channel`. Then:
+
+* each alert has buttons (✅ 合っている, ❌ 誤検知, 🔼/🔽 重要度, 担当違う); ✅/❌ emoji work too. They are human
+  labels for laya.
+* a reply in an alert's thread is read by the comment desk and the LLM, which posts "こう理解しました" with
+  登録 / 却下. Only what a person accepts is learned: labels, known issues (scoped and with an expiry),
+  facts about the network, causes and fixes. A request in the thread ("インターフェースのエラーも見て") is
+  investigated with read-only tools and answered.
+* `@noc-bot スイッチとルーターは @l2l3、サーバーは @server` sets up teams (confirmed the same way);
+  `@noc-bot 担当設定` shows them; any other `@noc-bot <question>` is investigated and answered.
+
 ## Not done yet
 
-* Slack App (Socket Mode): buttons, thread comments, the comment desk, and chat-based team setup.
-  Today noc-bot posts with a webhook or a bot token only.
 * noc-query on the syslog server (trace a user, grep the archive) as LLM tools.
 * Active probes (DNS, DHCP, RADIUS) as outcome labels.
 * Kubernetes manifests in iwnoc2026-cluster (`template/config/kubernetes/apps/noc-ai/`).

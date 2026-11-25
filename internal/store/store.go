@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
 CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY, key TEXT NOT NULL, opened TEXT NOT NULL, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS notes (
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL, who TEXT NOT NULL);
 `
 
 // Open opens (and migrates) the database.
@@ -152,4 +155,65 @@ func (s *Store) Subjects(ctx context.Context, desk string) (map[string]bool, err
 		out[v] = true
 	}
 	return out, rows.Err()
+}
+
+// LastDecision returns the text a desk last read about a subject, and whether there was one.
+func (s *Store) LastDecision(ctx context.Context, desk, subject string) (string, bool, error) {
+	var text string
+	err := s.db.QueryRowContext(ctx, `SELECT text FROM decisions WHERE desk=? AND subject=? ORDER BY id DESC LIMIT 1`, desk, subject).Scan(&text)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return text, err == nil, err
+}
+
+// Note records something people said: a comment, a confirmed fact, a resolution.
+func (s *Store) Note(ctx context.Context, at time.Time, kind, subject, text, who string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO notes(at,kind,subject,text,who) VALUES(?,?,?,?,?)`, ts(at), kind, subject, text, who)
+	return err
+}
+
+// Notes lists the latest notes of the given kinds, newest first.
+func (s *Store) Notes(ctx context.Context, limit int, kinds ...string) ([]string, error) {
+	q := `SELECT at, kind, subject, text FROM notes`
+	args := []any{}
+	if len(kinds) > 0 {
+		q += ` WHERE kind IN (?` + strings.Repeat(`,?`, len(kinds)-1) + `)`
+		for _, k := range kinds {
+			args = append(args, k)
+		}
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var at, kind, subject, text string
+		if err := rows.Scan(&at, &kind, &subject, &text); err != nil {
+			return nil, err
+		}
+		out = append(out, at[:16]+" ["+kind+"] "+subject+": "+text)
+	}
+	return out, rows.Err()
+}
+
+// PutJSON / GetJSON store small structured values (known issues and teams added from Slack).
+func (s *Store) PutJSON(ctx context.Context, k string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return s.Put(ctx, k, b)
+}
+
+func (s *Store) GetJSON(ctx context.Context, k string, v any) (bool, error) {
+	b, err := s.Get(ctx, k)
+	if err != nil || b == nil {
+		return false, err
+	}
+	return true, json.Unmarshal(b, v)
 }
