@@ -8,3 +8,4 @@ laya-svc/bundles/
 __pycache__/
 .venv/
 *.egg-info/
+.secrets/
