@@ -187,6 +187,13 @@ func (e *Engine) Evaluate(now time.Time) []Signal {
 				"last_hour": fmt.Sprint(in.LastHour), "normal_per_hour": fmt.Sprintf("%.1f", in.Baseline),
 				"first_seen": in.FirstSeen.UTC().Format(time.RFC3339), "example": m.Example}})
 	}
+	// any sender that normally talks a lot and went quiet: no list needed, the baseline says it
+	for _, in := range e.tr.All("sender", now) {
+		if in.Level == stats.LevelStopped {
+			out = append(out, Signal{Kind: KindSilence, Key: "silence:" + in.Key.ID, Host: in.Key.ID, Level: stats.LevelStopped, At: now,
+				Facts: map[string]string{"normal_per_hour": fmt.Sprintf("%.0f", in.Baseline), "last_seen": in.LastSeen.UTC().Format(time.RFC3339)}})
+		}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.started.IsZero() {

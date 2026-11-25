@@ -19,6 +19,7 @@ oauth_config:
       - reactions:read      # emoji answers on alerts
       - usergroups:read     # resolve @l2l3 / @server to their ids
       - users:read          # show who answered
+      - files:write         # raw logs as a folded snippet in the alert's thread
 settings:
   event_subscriptions:
     bot_events:

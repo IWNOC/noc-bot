@@ -47,9 +47,10 @@ type Expected struct {
 }
 
 type Team struct {
-	Mention     string `yaml:"mention"` // e.g. <!subteam^S0XXXX>
-	Channel     string `yaml:"channel"`
-	Description string `yaml:"description"`
+	Areas       []string `yaml:"areas"`   // network areas it owns: physical, l2l3, server, auth, wireless
+	Mention     string   `yaml:"mention"` // e.g. <!subteam^S0XXXX>
+	Channel     string   `yaml:"channel"`
+	Description string   `yaml:"description"`
 }
 
 // KnownIssue is something accepted that should not alert as such.
@@ -76,7 +77,8 @@ type Laya struct {
 type LLM struct {
 	URL      string        `yaml:"url"` // OpenAI-compatible base, e.g. https://llm.example/v1
 	Model    string        `yaml:"model"`
-	Deep     string        `yaml:"deep_model"` // slower model for reports
+	Deep     string        `yaml:"deep_model"`  // slower model for reports
+	AgentM   string        `yaml:"agent_model"` // model for Slack conversation; default: model
 	TokenEnv string        `yaml:"token_env"`
 	Timeout  time.Duration `yaml:"timeout"`
 }

@@ -40,6 +40,8 @@ type Incident struct {
 	Page       bool // mention the team
 	Summary    string
 	Annotation string // the investigator's (LLM) note, shown separately from facts
+	Title      string // LLM-written headline (checked against the evidence)
+	Body       string // LLM-written note (checked against the evidence)
 }
 
 // EventKind says what changed.

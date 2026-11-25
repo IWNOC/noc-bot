@@ -57,7 +57,22 @@ type feedbackCall struct {
 	Origin     string
 }
 
+// script is a list of assistant messages the fake LLM returns in order (the last one repeats).
+type script []map[string]any
+
+func toolCall(name string, args map[string]any) map[string]any {
+	a, _ := json.Marshal(args)
+	return map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "c1", "type": "function",
+		"function": map[string]any{"name": name, "arguments": string(a)}}}}
+}
+
+func say(text string) map[string]any { return map[string]any{"role": "assistant", "content": text} }
+
 func setup(t *testing.T, llmReply string) (*Bot, *fakeSlack, *[]feedbackCall, incident.Incident) {
+	return setupScript(t, script{say(llmReply)})
+}
+
+func setupScript(t *testing.T, sc script) (*Bot, *fakeSlack, *[]feedbackCall, incident.Incident) {
 	t.Helper()
 	var mu sync.Mutex
 	calls := &[]feedbackCall{}
@@ -77,8 +92,13 @@ func setup(t *testing.T, llmReply string) (*Bot, *fakeSlack, *[]feedbackCall, in
 		w.Write([]byte(`{"answers":{}}`))
 	}))
 	t.Cleanup(ly.Close)
+	var n int
 	lm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": llmReply}}}})
+		mu.Lock()
+		m := sc[min(n, len(sc)-1)]
+		n++
+		mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": m}}})
 	}))
 	t.Cleanup(lm.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -120,33 +140,35 @@ func TestWrongButtonTeachesBothDesks(t *testing.T) {
 	}
 }
 
-func TestCommentBecomesProposalAndOnlyAcceptedIsLearned(t *testing.T) {
-	reply := `{"summary_ja":"eps-rt-02 の未使用 IF の DHCP は直さない","correct":null,"severity":null,"team":"",
-	"known_issue":{"reason":"未使用 IF の DHCP クライアント。イベント中は直さない","scope":"template","days":2},"fact":"","resolution":"","instruction":""}`
-	b, fs, calls, in := setup(t, reply)
-	b.OnThreadReply(context.Background(), "ts1", "これは未使用の IF、イベント中は直さないので既知で", "U2")
+func TestAgentProposesKnownIssueOnlyAppliedOnAccept(t *testing.T) {
+	b, fs, calls, _ := setupScript(t, script{
+		toolCall("propose_known_issue", map[string]any{"incident_id": "this", "reason": "未使用 IF の DHCP。イベント中は直さない", "scope": "template", "days": 2,
+			"summary": "eps-rt-02 の DHCP の繰り返しを既知の問題にします"}),
+		say("既知の問題として登録するカードを出しました。登録を押すと反映されます。"),
+	})
+	b.OnThreadReply(context.Background(), "C1", "ts1", "これは未使用の IF、イベント中は直さないので既知で", "U2")
 	if len(fs.cards) != 1 {
-		t.Fatalf("expected one proposal card, got %d", len(fs.cards))
+		t.Fatalf("expected one card, got %d (posts %v)", len(fs.cards), fs.posts)
 	}
-	// nothing learned before a person accepts
+	if len(fs.posts) == 0 || !strings.Contains(fs.posts[len(fs.posts)-1], "カードを出しました") {
+		t.Fatalf("agent reply missing: %v", fs.posts)
+	}
+	meta, _ := b.Rules.Template("tpl1")
+	if b.Rules.Covering(meta, time.Now()) != nil {
+		t.Fatal("applied before acceptance")
+	}
 	for _, c := range *calls {
 		if c.Desk != "comment" {
 			t.Fatalf("learned before acceptance: %+v", c)
 		}
 	}
-	var id, card string
-	for k, v := range fs.cards {
-		id, card = k, v
+	var id string
+	for k := range fs.cards {
+		id = k
 	}
-	if !strings.Contains(card, "既知の問題として登録") {
-		t.Fatalf("card %q", card)
+	if out := b.OnProposal(context.Background(), id, true, "U3"); !strings.Contains(out, "登録しました") {
+		t.Fatalf("accept: %q", out)
 	}
-	out := b.OnProposal(context.Background(), id, true, "U3")
-	if !strings.Contains(out, "既知の問題") {
-		t.Fatalf("accept reply %q", out)
-	}
-	// the known issue now covers the template, and survives a restart via the store
-	meta, _ := b.Rules.Template("tpl1")
 	if b.Rules.Covering(meta, time.Now()) == nil {
 		t.Fatal("known issue not applied")
 	}
@@ -155,11 +177,45 @@ func TestCommentBecomesProposalAndOnlyAcceptedIsLearned(t *testing.T) {
 	if b2.Rules.Covering(meta, time.Now()) == nil {
 		t.Fatal("known issue not restored after restart")
 	}
-	// a second click on the same card does nothing
 	if out := b.OnProposal(context.Background(), id, true, "U3"); !strings.Contains(out, "処理済み") {
 		t.Fatalf("double apply: %q", out)
 	}
-	_ = in
+}
+
+func TestRepliesOutsideOurThreadsIgnored(t *testing.T) {
+	b, fs, _, _ := setup(t, "hello")
+	b.OnThreadReply(context.Background(), "C1", "someone-elses-thread", "hi", "U1")
+	if len(fs.posts) != 0 {
+		t.Fatalf("answered a thread it was not in: %v", fs.posts)
+	}
+	b.Posted("C1", "our-thread")
+	b.OnThreadReply(context.Background(), "C1", "our-thread", "hi", "U1")
+	if len(fs.posts) != 1 {
+		t.Fatalf("did not answer in its own thread: %v", fs.posts)
+	}
+}
+
+func TestMemoryProposalAndRecall(t *testing.T) {
+	b, fs, _, _ := setupScript(t, script{
+		toolCall("propose_memory", map[string]any{"fact": "eps-rt-01 は AS45679 につながる境界ルーター", "summary": "eps-rt-01 の役割を覚えます"}),
+		say("覚えるカードを出しました。"),
+	})
+	b.Posted("C1", "t9")
+	b.OnMention(context.Background(), "C1", "t9", "<@UBOT> eps-rt-01 は境界ルーターで上流は AS45679", "U1")
+	var id string
+	for k := range fs.cards {
+		id = k
+	}
+	if id == "" {
+		t.Fatal("no card")
+	}
+	b.OnProposal(context.Background(), id, true, "U1")
+	if got := b.memoryAbout(context.Background(), "eps-rt-01"); len(got) != 1 {
+		t.Fatalf("memory not recalled: %v", got)
+	}
+	if !strings.Contains(b.agentContext(context.Background(), nil), "境界ルーター") {
+		t.Fatal("memory not in the agent's context")
+	}
 }
 
 func TestTemplateRegexp(t *testing.T) {
@@ -178,42 +234,30 @@ func (f *fakeSlack) Groups(context.Context) ([]slackapp.Group, error) {
 
 // Plain-text "@team-l2l3" (not a real mention) still resolves through the workspace's groups;
 // a group that does not exist is dropped.
-func TestTeamSetupFromPlainHandles(t *testing.T) {
-	reply := `{"intent":"team_setup","teams":[
-	{"team":"l2l3","group":"team-l2l3","description":"ルーター・スイッチ・BGP","hosts":["eps-rt-*"]},
-	{"team":"l1","group":"team-l1","description":"配線・光"},
-	{"team":"server","group":"team-made-up","description":"x"}]}`
-	b, fs, _, _ := setup(t, reply)
-	b.OnMention(context.Background(), "C1", "ts9", "<@UBOT> チームは @team-l2l3 と @team-l1、それぞれ担当", "U1")
+// A team must be a real Slack user group; one the model made up is refused before any card.
+func TestTeamProposalNeedsRealGroup(t *testing.T) {
+	b, fs, _, _ := setupScript(t, script{
+		toolCall("propose_team", map[string]any{"group": "team-made-up", "owns": "x", "summary": "x"}),
+		toolCall("propose_team", map[string]any{"group": "@team-l1", "owns": "配線・光・電源", "hosts": []string{"pdu-*"}, "summary": "team-l1 を物理層の担当にします"}),
+		say("担当のカードを出しました。"),
+	})
+	b.Posted("C1", "t1")
+	b.OnMention(context.Background(), "C1", "t1", "<@UBOT> 配線とか光は team-l1", "U1")
 	if len(fs.cards) != 1 {
-		t.Fatalf("cards %d posts %v", len(fs.cards), fs.posts)
+		t.Fatalf("cards %d", len(fs.cards))
 	}
 	var id, card string
 	for k, v := range fs.cards {
 		id, card = k, v
 	}
-	if strings.Contains(card, "made-up") {
-		t.Fatal("a group that does not exist must be dropped")
+	if !strings.Contains(card, "<!subteam^S07LS37RWAG>") {
+		t.Fatalf("card %q", card)
 	}
 	b.OnProposal(context.Background(), id, true, "U1")
-	if tm, _ := b.team("l2l3"); tm.Mention != "<!subteam^S07LLMYUXT7>" {
-		t.Fatalf("l2l3 not applied: %+v", tm)
+	if tm, ok := b.team("team-l1"); !ok || tm.Mention != "<!subteam^S07LS37RWAG>" {
+		t.Fatalf("team not applied: %+v", tm)
 	}
-	if tm, ok := b.team("l1"); !ok || tm.Mention != "<!subteam^S07LS37RWAG>" {
-		t.Fatalf("l1 not added: %+v", tm)
-	}
-	if s := b.senderFor("", "eps-rt-02"); s.Team != "l2l3" {
-		t.Fatalf("sender rule not applied: %+v", s)
-	}
-	if !strings.Contains(b.describeTeams(), "→ <!subteam^S07LS37RWAG>") {
-		t.Fatal(b.describeTeams())
-	}
-}
-
-func TestSettingsQuestionShowsTeams(t *testing.T) {
-	b, fs, _, _ := setup(t, `{"intent":"show_teams","teams":[]}`)
-	b.OnMention(context.Background(), "C1", "ts9", "<@UBOT> まだメンション未設定状態になってる？", "U1")
-	if len(fs.posts) != 1 || !strings.Contains(fs.posts[0], "今の担当設定") {
-		t.Fatalf("posts %v", fs.posts)
+	if s := b.senderFor("", "pdu-3"); s.Team != "team-l1" {
+		t.Fatalf("host rule not applied: %+v", s)
 	}
 }

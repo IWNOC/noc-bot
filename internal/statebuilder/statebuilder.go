@@ -16,7 +16,7 @@ import (
 )
 
 // Version of the wording. Stored with every decision so evaluations compare like with like.
-const Version = "line-v1"
+const Version = "line-v2" // v2: operator notes
 
 var jst = time.FixedZone("JST", 9*3600)
 
@@ -30,6 +30,7 @@ type Line struct {
 	Stats    stats.Info
 	Known    *config.KnownIssue
 	Related  []string // other things going on at the same time, already in words
+	Notes    []string // what operators told noc-bot about this sender (its memory)
 	Now      time.Time
 }
 
@@ -54,6 +55,9 @@ func LineState(l Line) string {
 		fmt.Fprintf(&b, "Happening at the same time: %s.\n", strings.Join(l.Related, "; "))
 	} else {
 		b.WriteString("Happening at the same time: nothing else unusual.\n")
+	}
+	for _, n := range l.Notes {
+		fmt.Fprintf(&b, "Operators told us: %s\n", n)
 	}
 	fmt.Fprintf(&b, "Time of day: %s.\n", timeOfDay(l.Now))
 	return b.String()

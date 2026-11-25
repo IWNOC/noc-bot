@@ -84,3 +84,26 @@ func TestNoSilenceAlertRightAfterStart(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// A sender that used to talk and stopped is reported without being listed anywhere.
+func TestSilenceFromBaselineWithoutConfig(t *testing.T) {
+	tr := stats.NewTracker()
+	e, _ := New(&config.Config{Clock: config.Clock{MaxSkew: 2 * time.Minute}}, tr)
+	k := stats.Key{Kind: "sender", ID: "kea-primary-x"}
+	now := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 180; i++ {
+		for j := 0; j < 5; j++ {
+			tr.Observe(k, now.Add(time.Duration(j)*time.Second))
+		}
+		now = now.Add(time.Minute)
+		tr.Tick(now)
+	}
+	for i := 0; i < 61; i++ {
+		now = now.Add(time.Minute)
+		tr.Tick(now)
+	}
+	got := e.Evaluate(now)
+	if len(got) != 1 || got[0].Kind != KindSilence || got[0].Host != "kea-primary-x" {
+		t.Fatalf("got %+v", got)
+	}
+}

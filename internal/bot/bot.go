@@ -10,7 +10,6 @@ package bot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -41,6 +40,7 @@ type Bot struct {
 	Incidents *incident.Manager
 	Laya      *laya.Client // nil: no laya
 	LLM       *llm.Client  // nil: no LLM
+	Agent     *llm.Client  // conversation model; nil: use LLM
 	Notify    notify.Notifier
 	Store     *store.Store
 	Known     *teacher.Known
@@ -192,27 +192,17 @@ func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	note := ""
-	if b.LLM != nil {
-		if n, err := b.annotate(ctx, in); err != nil {
-			b.Log.Warn("annotate", "incident", in.ID, "err", err)
-		} else {
-			note = n
-		}
-	}
+	title, body, note, composed := b.compose(ctx, in)
 	if b.Laya != nil {
 		text := b.incidentState(in, sender, note)
 		known := map[string]any{}
-		if team != "" {
-			known["primary_team"] = team
-		}
 		b.Known.Put(text, known, "")
 		if d, err := b.Laya.Decide(ctx, "incident", text); err != nil {
 			b.Log.Warn("laya incident desk", "err", err)
 		} else {
 			b.record(ctx, "incident", in.ID, text, d)
-			if a, ok := d.Answers["primary_team"]; ok && team == "" && trusted(a) {
-				team = a.String()
+			if a, ok := d.Answers["area"]; ok && team == "" && trusted(a) {
+				team = b.teamForArea(a.String()) // "" until people say who owns that area
 			}
 			if a, ok := d.Answers["severity"]; ok && trusted(a) {
 				if v, ok := a.Int(); ok {
@@ -227,7 +217,10 @@ func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
 		}
 	}
 	in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) {
-		i.Team, i.Severity, i.Page, i.Annotation, i.Notified = team, sev, page, note, b.Now()
+		i.Team, i.Severity, i.Page, i.Notified = team, sev, page, b.Now()
+		if composed {
+			i.Title, i.Body = title, body
+		}
 	})
 	b.post(ctx, incident.Event{Kind: incident.EvOpened, Incident: in})
 }
@@ -244,6 +237,9 @@ func (b *Bot) post(ctx context.Context, ev incident.Event) {
 		mention = t.Mention
 	}
 	text := notify.Render(ev, mention)
+	if ev.Kind == incident.EvOpened && ev.Incident.Title != "" {
+		text = renderComposed(ev, ev.Incident.Title, ev.Incident.Body, mention)
+	}
 	var ts string
 	var err error
 	if ip, ok := b.Notify.(IncidentPoster); ok && ev.Kind == incident.EvOpened {
@@ -257,6 +253,16 @@ func (b *Bot) post(ctx context.Context, ev incident.Event) {
 	}
 	if ts != "" && ev.Incident.Thread == "" {
 		b.Incidents.Update(ev.Incident.Key, func(i *incident.Incident) { i.Thread = ts })
+		if lp, ok := b.Notify.(LogPoster); ok && ev.Kind == incident.EvOpened {
+			b.mu.Lock()
+			logs := strings.Join(b.examples[ev.Incident.TplID], "\n")
+			b.mu.Unlock()
+			if logs != "" {
+				if err := lp.PostLogs(ctx, ts, "ログ（"+ev.Incident.Host+"）", logs); err != nil {
+					b.Log.Warn("post logs", "err", err)
+				}
+			}
+		}
 	}
 	if err := b.Store.Incident(ctx, ev.Incident.ID, ev.Incident.Key, ev.Incident.Opened, ev.Incident); err != nil {
 		b.Log.Warn("store incident", "err", err)
@@ -293,11 +299,9 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 	sender := b.senderFor(meta.From, meta.Host)
 	known := b.Rules.Covering(meta, now)
 	text := statebuilder.LineState(statebuilder.Line{Template: meta.Text, Example: meta.Example, Program: meta.Program,
-		Sender: sender, Host: meta.Host, Stats: info, Known: known, Related: b.Incidents.Related("odd:"+s.TplID, now), Now: now})
+		Sender: sender, Host: meta.Host, Stats: info, Known: known, Related: b.Incidents.Related("odd:"+s.TplID, now),
+		Notes: b.memoryAbout(ctx, meta.Host), Now: now})
 	exact := map[string]any{}
-	if sender.Team != "" {
-		exact["team"] = sender.Team
-	}
 	if known != nil {
 		exact["odd"] = false
 	}
@@ -425,22 +429,11 @@ func (b *Bot) incidentState(in incident.Incident, s config.Sender, note string) 
 	if rel := b.Incidents.Related(in.Key, b.Now()); len(rel) > 0 {
 		fmt.Fprintf(&sb, "Happening at the same time: %s.\n", strings.Join(rel, "; "))
 	}
+	for _, m := range b.memoryAbout(context.Background(), in.Host) {
+		fmt.Fprintf(&sb, "Operators told us: %s\n", m)
+	}
 	if note != "" {
 		fmt.Fprintf(&sb, "Investigator's note (may be wrong): %s\n", note)
 	}
 	return sb.String()
-}
-
-const annotateSystem = `あなたはイベントネットワークの NOC の一次調査担当です。
-与えられた事実と道具の結果だけを根拠に、Slack に載せる「見立て」と「次にやること」を日本語で合計5行以内で書いてください。
-- 数字・IP アドレス・時刻は書かない（事実欄にプログラムが正確に書くため）。
-- 与えられていない事実を断定しない。根拠が弱いときは「可能性」「要確認」と書く。
-- 原因がわからないときは「原因は不明」と書く。`
-
-func (b *Bot) annotate(ctx context.Context, in incident.Incident) (string, error) {
-	facts, _ := json.MarshalIndent(in.Facts, "", "  ")
-	user := fmt.Sprintf("種類: %s\n送信元: %s\nパターン: %s\n事実:\n%s\n同時に起きていること: %s",
-		in.Kind, in.Host, in.Template, facts, strings.Join(b.Incidents.Related(in.Key, b.Now()), "; "))
-	out, _, err := b.LLM.Run(ctx, []llm.Message{{Role: "system", Content: annotateSystem}, {Role: "user", Content: user}}, b.Tools(), 3, 400, false)
-	return strings.TrimSpace(out), err
 }

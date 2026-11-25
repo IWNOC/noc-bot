@@ -20,8 +20,8 @@ type Handler interface {
 	OnAnswer(ctx context.Context, incidentID, action, value, user string) string
 	// OnReaction: an emoji added to one of noc-bot's messages.
 	OnReaction(ctx context.Context, messageTS, emoji, user string)
-	// OnThreadReply: a person wrote in a thread noc-bot started.
-	OnThreadReply(ctx context.Context, threadTS, text, user string)
+	// OnThreadReply: a person wrote in a thread (noc-bot decides whether it is part of it).
+	OnThreadReply(ctx context.Context, channel, threadTS, text, user string)
 	// OnMention: "@noc-bot ..." anywhere. thread is the thread to answer in.
 	OnMention(ctx context.Context, channel, thread, text, user string)
 	// OnProposal: a person accepted or rejected something noc-bot proposed to learn.
@@ -41,6 +41,9 @@ const (
 
 // App is the Slack app.
 type App struct {
+	// Posted, when set, is told the thread root of everything noc-bot posts, so replies there
+	// are treated as conversation with it.
+	Posted  func(channel, thread string)
 	API     *slack.Client
 	SM      *socketmode.Client
 	Channel string
@@ -63,7 +66,18 @@ func (a *App) Post(ctx context.Context, text, thread string) (string, error) {
 		opts = append(opts, slack.MsgOptionTS(thread))
 	}
 	_, ts, err := a.API.PostMessageContext(ctx, a.Channel, opts...)
+	a.posted(a.Channel, thread, ts, err)
 	return ts, err
+}
+
+func (a *App) posted(channel, thread, ts string, err error) {
+	if err != nil || a.Posted == nil {
+		return
+	}
+	if thread == "" {
+		thread = ts
+	}
+	a.Posted(channel, thread)
 }
 
 // PostIncident posts an alert with answer buttons. It returns the message ts (the thread).
@@ -79,6 +93,7 @@ func (a *App) PostIncident(ctx context.Context, incidentID, text, thread string)
 		opts = append(opts, slack.MsgOptionTS(thread))
 	}
 	_, ts, err := a.API.PostMessageContext(ctx, a.Channel, opts...)
+	a.posted(a.Channel, thread, ts, err)
 	return ts, err
 }
 
@@ -125,7 +140,8 @@ func (a *App) PostProposalIn(ctx context.Context, channel, thread, proposalID, t
 			withStyle(slack.NewButtonBlockElement(ActAccept, proposalID, slack.NewTextBlockObject(slack.PlainTextType, "登録", false, false)), slack.StylePrimary),
 			slack.NewButtonBlockElement(ActReject, proposalID, slack.NewTextBlockObject(slack.PlainTextType, "却下", false, false))),
 	}
-	_, _, err := a.API.PostMessageContext(ctx, channel, slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionTS(thread))
+	_, ts, err := a.API.PostMessageContext(ctx, channel, slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionTS(thread))
+	a.posted(channel, thread, ts, err)
 	return err
 }
 
@@ -135,7 +151,8 @@ func (a *App) PostIn(ctx context.Context, channel, thread, text string) error {
 	if thread != "" {
 		opts = append(opts, slack.MsgOptionTS(thread))
 	}
-	_, _, err := a.API.PostMessageContext(ctx, channel, opts...)
+	_, ts, err := a.API.PostMessageContext(ctx, channel, opts...)
+	a.posted(channel, thread, ts, err)
 	return err
 }
 
@@ -192,7 +209,7 @@ func (a *App) onEvent(ctx context.Context, ev slackevents.EventsAPIEvent) {
 		if a.botUser != "" && strings.Contains(e.Text, "<@"+a.botUser+">") {
 			return
 		}
-		a.h.OnThreadReply(ctx, e.ThreadTimeStamp, e.Text, e.User)
+		a.h.OnThreadReply(ctx, e.Channel, e.ThreadTimeStamp, e.Text, e.User)
 	case *slackevents.ReactionAddedEvent:
 		if e.User == a.botUser {
 			return
@@ -252,4 +269,45 @@ func (a *App) Groups(ctx context.Context) ([]Group, error) {
 		}
 	}
 	return out, nil
+}
+
+// Turn is one message of a thread.
+type Turn struct {
+	User string
+	Text string
+	Bot  bool // written by noc-bot
+}
+
+// Thread returns a thread's messages, oldest first (at most the last 40).
+func (a *App) Thread(ctx context.Context, channel, ts string) ([]Turn, error) {
+	msgs, _, _, err := a.API.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{ChannelID: channel, Timestamp: ts, Limit: 200})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Turn, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, Turn{User: m.User, Text: m.Text, Bot: m.BotID != "" || (a.botUser != "" && m.User == a.botUser)})
+	}
+	if len(out) > 40 {
+		out = append(out[:1], out[len(out)-39:]...) // keep the opening message for context
+	}
+	return out, nil
+}
+
+// PostLogs puts raw log lines in a thread, folded: as a text snippet (collapsed in Slack) when the
+// app has files:write, otherwise as a code block reply.
+func (a *App) PostLogs(ctx context.Context, thread, title, logs string) error {
+	if strings.TrimSpace(logs) == "" {
+		return nil
+	}
+	_, err := a.API.UploadFileV2Context(ctx, slack.UploadFileV2Parameters{
+		Channel: a.Channel, ThreadTimestamp: thread, Filename: "logs.txt", Title: title,
+		Content: logs, FileSize: len(logs), SnippetType: "text",
+	})
+	if err == nil {
+		return nil
+	}
+	a.Log.Info("snippet upload failed, posting logs as a reply (add files:write to the app for snippets)", "err", err)
+	_, err = a.Post(ctx, title+"\n```"+clip(logs, 3500)+"```", thread)
+	return err
 }

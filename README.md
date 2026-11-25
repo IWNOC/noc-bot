@@ -40,7 +40,7 @@ to a sponsor), get a commercial licence from https://embedding.in/licence or run
 | `laya-svc/` | Python: one laya Learner + Escalator per desk, HTTP API (`laya-svc/laya_svc/app.py`) |
 | `laya-svc/desks/` | the six desks' questions (line, window, incident, comment, action, helpdesk) |
 | `deploy/rsyslog-forward.conf` | rsyslog snippet that forwards event lines to noc-bot without ever blocking |
-| `noc-bot.example.yaml` | configuration: senders, teams, expected senders, known issues |
+| `noc-bot.example.yaml` | configuration: only where things are (listeners, laya, LLM, Slack, store) |
 
 ## Run
 
@@ -61,19 +61,28 @@ LAYA_SVC_DESKS=./desks LAYA_SVC_WORKDIR=./state LAYA_SVC_HOST=0.0.0.0 python -m 
 Desks start in **shadow mode**: the teacher answers every question and laya is measured against it,
 so `GET /v1/desks/<desk>/report` shows how often laya would have been right before it answers alone.
 
-## Slack
+## Slack: a colleague that learns the site by talking
 
-Create the app from `deploy/slack-app-manifest.yaml`, install it, invite `@noc-bot` to the alert channel,
-and set `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `slack.channel`. Then:
+noc-bot starts knowing nothing about the site. The config file only says where things are
+(`noc-bot.example.yaml`); teams, who to mention, what devices are, known issues and what is normal
+here are learned in Slack and kept in the store.
 
-* each alert has buttons (✅ 合っている, ❌ 誤検知, 🔼/🔽 重要度, 担当違う); ✅/❌ emoji work too. They are human
-  labels for laya.
-* a reply in an alert's thread is read by the comment desk and the LLM, which posts "こう理解しました" with
-  登録 / 却下. Only what a person accepts is learned: labels, known issues (scoped and with an expiry),
-  facts about the network, causes and fixes. A request in the thread ("インターフェースのエラーも見て") is
-  investigated with read-only tools and answered.
-* `@noc-bot スイッチとルーターは @l2l3、サーバーは @server` sets up teams (confirmed the same way);
-  `@noc-bot 担当設定` shows them; any other `@noc-bot <question>` is investigated and answered.
+* **Alerts are written by the LLM**: a headline and a note as long as the situation needs, using what
+  operators taught it. Every number, address and time in that text must appear in the evidence it was
+  given (or found with its tools); otherwise the text is dropped and the plain fact list is posted.
+  Mentions, team and severity are added by code. Raw logs go to the thread as a folded snippet
+  (`files:write`), or a code block if the app lacks that scope.
+* **Conversation**: every `@noc-bot` and every reply in a thread noc-bot posted in goes to one agent,
+  with the thread's history. It looks things up with read-only tools (logs, incidents, its own settings
+  and memory, Slack user groups) and answers.
+* **Learning by proposal**: to remember something, or to change how it alerts (who owns what, known
+  issues, verdicts on an alert), the agent posts a card; nothing takes effect until a person presses 登録.
+* **Buttons and emoji** on alerts (✅ ❌ 🔼 🔽, 担当違う) are human labels for laya.
+* laya is asked about **network areas** (physical, l2l3, server, auth, wireless), which do not change
+  between events. Which team owns an area is site knowledge, set up in conversation.
+
+Create the app from `deploy/slack-app-manifest.yaml`, install it, invite `@noc-bot` to the alert
+channel, and set `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `slack.channel`.
 
 ## Not done yet
 

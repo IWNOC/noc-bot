@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
 CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY, key TEXT NOT NULL, opened TEXT NOT NULL, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS threads (channel TEXT NOT NULL, ts TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(channel, ts));
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL, who TEXT NOT NULL);
 `
@@ -216,4 +217,47 @@ func (s *Store) GetJSON(ctx context.Context, k string, v any) (bool, error) {
 		return false, err
 	}
 	return true, json.Unmarshal(b, v)
+}
+
+// Thread remembers a thread noc-bot posted in.
+func (s *Store) Thread(ctx context.Context, channel, threadTS string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO threads(channel,ts,at) VALUES(?,?,?)`, channel, threadTS, ts(at))
+	return err
+}
+
+// IsThread reports whether noc-bot posted in a thread.
+func (s *Store) IsThread(ctx context.Context, channel, threadTS string) bool {
+	var n int
+	s.db.QueryRowContext(ctx, `SELECT count(*) FROM threads WHERE channel=? AND ts=?`, channel, threadTS).Scan(&n)
+	return n > 0
+}
+
+// DeleteNote removes a note (a memory people asked to forget).
+func (s *Store) DeleteNote(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM notes WHERE id=?`, id)
+	return err
+}
+
+// NotesWithID lists notes of one kind with their ids, oldest first.
+func (s *Store) NotesWithID(ctx context.Context, kind string, limit int) ([]NoteRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, at, subject, text, who FROM notes WHERE kind=? ORDER BY id DESC LIMIT ?`, kind, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NoteRow
+	for rows.Next() {
+		var n NoteRow
+		if err := rows.Scan(&n.ID, &n.At, &n.Subject, &n.Text, &n.Who); err != nil {
+			return nil, err
+		}
+		out = append([]NoteRow{n}, out...)
+	}
+	return out, rows.Err()
+}
+
+// NoteRow is one note.
+type NoteRow struct {
+	ID                     int64
+	At, Subject, Text, Who string
 }

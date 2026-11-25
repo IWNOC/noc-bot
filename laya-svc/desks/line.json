@@ -1,14 +1,39 @@
 {
   "name": "line",
-  "description": "One log pattern (template) with its sender, frequency and context, as an operator scanning the logs would see it.",
+  "description": "One log pattern (template) with its sender, frequency and context, as an operator scanning the logs would see it. v2: asks the network area (stable across events) instead of a team.",
   "every": 50,
   "shadow": true,
   "questions": {
-    "odd": {"type": "boolean", "instructions": "Would an experienced network operator watching these logs think 'that is strange, someone should look at this'?"},
-    "kind": {"type": "choice", "instructions": "What kind of log line is this?",
-      "criteria": {"error": "something failed or was refused", "state_change": "a session, link, peer or service went up or down", "info": "normal activity worth keeping", "noise": "routine chatter nobody needs to read"}},
-    "team": {"type": "choice", "instructions": "Which team owns what this line is about?",
-      "criteria": {"l2l3": "switches, routers, BGP, VyOS, links and upstreams", "server": "Kubernetes, Kea DHCP server, Unbound DNS, NTP, syslog and other servers", "auth": "RADIUS, eduroam, OpenRoaming, user authentication", "wifi": "access points and the wireless controller", "none": "nobody, or unclear"}}
+    "odd": {
+      "type": "boolean",
+      "instructions": "Would an experienced network operator watching these logs think 'that is strange, someone should look at this'?"
+    },
+    "kind": {
+      "type": "choice",
+      "instructions": "What kind of log line is this?",
+      "criteria": {
+        "error": "something failed or was refused",
+        "state_change": "a session, link, peer or service went up or down",
+        "info": "normal activity worth keeping",
+        "noise": "routine chatter nobody needs to read"
+      }
+    },
+    "area": {
+      "type": "choice",
+      "instructions": "Which area of the network is this line about?",
+      "criteria": {
+        "physical": "cables, optics, power, physical links",
+        "l2l3": "switches, routers, BGP, VyOS, routing and links",
+        "server": "servers, Kubernetes, DHCP, DNS, NTP, syslog",
+        "auth": "RADIUS, eduroam, OpenRoaming, user authentication",
+        "wireless": "access points, wireless controller",
+        "none": "nothing specific, or unclear"
+      }
+    }
   },
-  "trust": {"odd": 0.95, "kind": 0.9, "team": 0.9}
+  "trust": {
+    "odd": 0.95,
+    "kind": 0.9,
+    "area": 0.9
+  }
 }

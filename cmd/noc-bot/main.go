@@ -73,8 +73,12 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if lm != nil && cfg.LLM.AgentM != "" {
+		b.Agent = llm.New(cfg.LLM.URL, os.Getenv(cfg.LLM.TokenEnv), cfg.LLM.AgentM, cfg.LLM.Timeout)
+	}
 	if app != nil {
 		app.Teams = b.TeamNames
+		app.Posted = b.Posted
 		go func() {
 			if err := app.Run(ctx, b); err != nil && ctx.Err() == nil {
 				log.Error("slack app stopped", "err", err)
