@@ -1,0 +1,21 @@
+#!/bin/sh
+# /etc/cron.hourly/syslog-watch
+# 追跡に必須の送信元からのログ途絶と、ディスク使用率を検知してローカル syslog に警告を出す。
+# 監視システムからは "syslog-watch" タグの warning を拾えばよい。
+BASE=/var/log/remote
+SILENT_MIN=60          # この分数ログが来なければ警告
+DISK_WARN=80           # /var/log/remote の使用率(%)
+# 必ずログを送ってくるはずの送信元（ホスト名の先頭一致）。
+# Kea は Kubernetes の Pod で送信元IPが変わりうるので、IPではなくホスト名で見る。
+EXPECTED="noc-radsec-proxy eps-rt-02 kea-primary kea-standby"
+
+cutoff=$(date -u -d "-${SILENT_MIN} min" +%Y-%m-%dT%H:%M:%S)
+# 直近に更新されたファイルの末尾だけを見る（巨大ファイルを全読みしない）
+seen=$(find "$BASE" -type f -name '*.log' -mmin -"$SILENT_MIN" 2>/dev/null \
+  | while read -r f; do tail -n 5000 "$f"; done \
+  | awk -v c="$cutoff" '$1 >= c {print $3}' | sort -u)
+for h in $EXPECTED; do
+  echo "$seen" | grep -q "^$h" || logger -p user.warning -t syslog-watch "no logs from $h for ${SILENT_MIN}min"
+done
+use=$(df --output=pcent "$BASE" | tail -1 | tr -dc 0-9)
+[ "$use" -lt "$DISK_WARN" ] || logger -p user.warning -t syslog-watch "$BASE usage ${use}%"

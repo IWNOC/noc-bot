@@ -1,0 +1,17 @@
+#!/bin/sh
+# /etc/cron.hourly/remote-log-retention
+# 65分以上書き込みのないログを圧縮してハッシュを記録し、保存期間を過ぎたものを削除する。
+# rsyslog は 5分書き込みがないファイルを閉じる（closeTimeout=5）ので、65分後なら安全に圧縮できる。
+RETENTION_DAYS=400
+BASE=/var/log/remote
+[ -d "$BASE" ] || exit 0
+find "$BASE" -type f -name '*.log' -mmin +65 | while read -r f; do
+  if [ -e "$f.gz" ]; then
+    # 同じ日のファイルが後から再作成された場合は、既存の .gz に追記（gzip は連結しても有効）
+    gzip -9c "$f" >> "$f.gz" && rm -f "$f"
+  else
+    gzip -9 "$f"
+  fi
+  sha256sum "$f.gz" >> "$BASE/SHA256SUMS"
+done
+find "$BASE" -type f -name '*.log.gz' -mtime +"$RETENTION_DAYS" -delete
