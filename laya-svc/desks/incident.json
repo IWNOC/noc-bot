@@ -1,0 +1,16 @@
+{
+  "name": "incident",
+  "description": "One incident: the grouped alerts, their facts, and what the investigation found.",
+  "every": 30,
+  "shadow": true,
+  "questions": {
+    "severity": {"type": "score", "instructions": "How large is the impact on event participants?",
+      "criteria": ["none", "a few users", "many users", "everyone or a core service down"]},
+    "page_now": {"type": "boolean", "instructions": "Should the owning team be mentioned (paged) right now, rather than this waiting for the next summary?"},
+    "primary_team": {"type": "choice", "instructions": "Which team should lead this incident?",
+      "criteria": {"l2l3": "network: switches, routers, BGP, links", "server": "servers and services: Kubernetes, Kea, Unbound, NTP, syslog", "auth": "RADIUS and roaming authentication", "wifi": "access points and the wireless controller", "external": "an upstream or third party outside our control"}},
+    "cause_class": {"type": "choice", "instructions": "What kind of cause is most likely?",
+      "criteria": {"link": "a physical link, optic or cable", "peer": "the other side: upstream, peer, federation or provider", "config": "a configuration mistake or change", "capacity": "load, exhaustion or resource limits", "client": "one client or a few misbehaving clients", "known_issue": "an accepted, known issue", "unknown": "not clear yet"}}
+  },
+  "trust": {"severity": 0.9, "page_now": 0.97, "primary_team": 0.9, "cause_class": 0.85}
+}

@@ -1,0 +1,13 @@
+{
+  "name": "helpdesk",
+  "description": "A message from a participant or staff member reporting a problem (often Japanese).",
+  "every": 30,
+  "shadow": true,
+  "questions": {
+    "category": {"type": "choice", "instructions": "What is the problem about?",
+      "criteria": {"auth": "cannot log in to eduroam or OpenRoaming, password or account trouble", "addressing": "connected but no IP address, or no internet", "dns": "names do not resolve, some sites do not open", "slow": "works but slow or unstable", "wifi": "cannot see or join the network, weak signal", "other": "something else"}},
+    "needs_trace": {"type": "boolean", "instructions": "Do we need to trace this user's or device's session in the logs to answer?"},
+    "urgency": {"type": "score", "instructions": "How urgent is it?", "criteria": ["can wait", "soon", "now"]}
+  },
+  "trust": {"category": 0.9, "needs_trace": 0.9, "urgency": 0.9}
+}

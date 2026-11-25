@@ -1,0 +1,52 @@
+# noc-bot configuration. Site knowledge lives here (and in the store), not in code.
+listen:
+  tcp: ":6514"     # rsyslog forwards RemoteFmt lines here (see deploy/rsyslog-forward.conf)
+  http: ":8080"    # /health and /v1/teacher (laya-svc's Escalator calls it)
+
+teams:
+  l2l3:   {mention: "<!subteam^S0XXXXXXX>", description: "switches, routers, BGP, VyOS, links"}
+  server: {mention: "<!subteam^S0YYYYYYY>", description: "k8s, Kea, Unbound, NTP, syslog"}
+  auth:   {mention: "", description: "RADIUS, eduroam, OpenRoaming"}
+  wifi:   {mention: "", description: "APs, CV-CUE"}
+
+senders:
+  - {from: "10.110.0.1", name: eps-rt-01, role: "border router", team: l2l3, vendor: arista}
+  - {host: "eps-rt-*", role: "VyOS router", team: l2l3, vendor: vyos}
+  - {from: "10.20.2.*", role: "access switch", team: l2l3, vendor: arista}
+  - {host: "kea-*", role: "DHCP server", team: server}
+  - {host: "unbound-*", role: "participant DNS resolver", team: server}
+  - {host: "noc-radsec-proxy", role: "RADIUS proxy", team: auth}
+
+expected:
+  - {host: "noc-radsec-proxy*", silence: 30m}
+  - {host: "kea-primary*", silence: 15m}
+  - {host: "unbound-*", silence: 15m}
+  - {host: "eps-rt-02", silence: 30m}
+
+known_issues:
+  - id: arista-clock-9h
+    reason: "Arista devices send JST labelled as UTC; accepted for the event"
+    vendor: arista
+    expect_skew: 9h
+    skew_tolerance: 2m
+    expires: 2026-11-28T00:00:00+09:00
+
+clock:
+  max_skew: 2m
+
+laya:
+  url: "http://laya-svc:8100"
+  token_env: LAYA_SVC_TOKEN
+
+llm:
+  url: "https://llm.example/v1"
+  model: "Qwen3.8-Flash-Next-oQ4e-fp16-mtp"
+  deep_model: "Qwen3.8-27B-oQ4e-fp16-mtp"
+  token_env: LLM_TOKEN
+
+slack:
+  webhook_env: SLACK_WEBHOOK_URL   # or set SLACK_BOT_TOKEN and channel for threads
+  channel: ""
+
+store:
+  path: /data/noc-bot.db

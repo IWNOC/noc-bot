@@ -1,0 +1,12 @@
+{
+  "name": "comment",
+  "description": "A message an operator wrote in an incident thread (often Japanese), with the incident title for context.",
+  "every": 30,
+  "shadow": true,
+  "questions": {
+    "intent": {"type": "choice", "instructions": "What is the operator doing with this message?",
+      "criteria": {"label": "saying the alert was right, wrong, or had the wrong severity or team", "known_issue": "declaring something a known or accepted issue that should not alert", "fact": "stating a fact about the network or environment", "instruction": "asking for more investigation or a specific check", "resolution": "saying what the cause was or how it was fixed", "chat": "conversation that teaches nothing"}},
+    "needs_action_now": {"type": "boolean", "instructions": "Does the message ask the bot to do something right now?"}
+  },
+  "trust": {"intent": 0.95, "needs_action_now": 0.95}
+}

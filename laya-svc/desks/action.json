@@ -1,0 +1,11 @@
+{
+  "name": "action",
+  "description": "An operation the investigator proposed, with the situation. A second opinion only: the allow-list in code decides first.",
+  "every": 30,
+  "shadow": true,
+  "questions": {
+    "risk": {"type": "choice", "instructions": "How should this proposed operation be handled?",
+      "criteria": {"safe": "read-only or trivially reversible, fine to run automatically", "approve": "changes something; a person must approve it first", "forbidden": "touches routing, core network configuration, or could cut users off; never automatic"}}
+  },
+  "trust": {"risk": 0.98}
+}

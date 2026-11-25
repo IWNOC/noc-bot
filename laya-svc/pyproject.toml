@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["laya_svc"]
+
+[project]
+name = "laya-svc"
+version = "0.1.0"
+description = "Decision desks for noc-bot: laya Learner + Escalator behind a small HTTP API"
+requires-python = ">=3.10"
+# LICENCE NOTE: vegaml-learn is PolyForm Noncommercial 1.0.0. This project is noncommercial,
+# so it may use it. If noc-bot is ever used commercially (sold, run as a paid service, shipped in
+# a company product or delivered to a sponsor), get a commercial licence from
+# https://embedding.in/licence or run with LAYA_SVC_LEARNING=off (laya's Apache-2.0 fit/calibrate only).
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+learn = ["laya>=0.5", "vegaml-learn>=0.20"]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

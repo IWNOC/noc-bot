@@ -1,0 +1,12 @@
+{
+  "name": "window",
+  "description": "A five-minute summary of everything the syslog server received: per-sender counts, new patterns, patterns that rose or fell, senders that went silent, sample lines.",
+  "every": 50,
+  "shadow": true,
+  "questions": {
+    "anything_odd": {"type": "boolean", "instructions": "Looking at this five-minute summary, would an experienced network operator feel that something is off and worth a closer look?"},
+    "where": {"type": "choice", "instructions": "If something is off, where is it?",
+      "criteria": {"routing": "BGP, routers, links, upstreams", "auth": "RADIUS, eduroam, OpenRoaming", "addressing": "DHCP, NDP, NAT64, NAT44", "dns": "DNS resolution", "time": "NTP and clocks", "infra": "servers, Kubernetes, disks, the syslog pipeline", "nothing": "nothing is off"}}
+  },
+  "trust": {"anything_odd": 0.95, "where": 0.9}
+}
