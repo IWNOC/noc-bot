@@ -27,7 +27,7 @@ sed -i 's#path: /data/noc-bot.db#path: /var/lib/noc-bot/noc-bot.db#' /etc/noc-bo
 # firewall: syslog stream only from the syslog server, teacher/health only over tailscale and the mgmt LAN
 if command -v nft >/dev/null; then
   install -m 0644 "$HERE/nftables-noc-bot.conf" /etc/nftables.conf
-  systemctl enable --now nftables
+  systemctl enable nftables && systemctl restart nftables   # apt may already have started it with the default rules
 fi
 
 install -m 0644 "$HERE/noc-bot.service" /etc/systemd/system/noc-bot.service
