@@ -228,7 +228,7 @@ func (t *Teacher) ask(ctx context.Context, desk, text, extra string, qs map[stri
 		}
 		b.WriteString("\n")
 	}
-	content, _, err := t.LLM.Run(ctx, []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: b.String()}}, t.Tools, 3, 800, true)
+	content, _, err := t.LLM.Run(ctx, []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: b.String()}}, t.Tools, 3, 1500, true) // evidence quotes are long; 800 tokens cut replies off mid-JSON
 	if err != nil {
 		return nil, nil, err
 	}
