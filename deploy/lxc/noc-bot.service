@@ -1,0 +1,23 @@
+[Unit]
+Description=noc-bot: log-watching NOC operator
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=noc-bot
+Group=noc-bot
+EnvironmentFile=/etc/noc-bot/env
+ExecStart=/usr/local/bin/noc-bot -config /etc/noc-bot/noc-bot.yaml
+WorkingDirectory=/var/lib/noc-bot
+Restart=always
+RestartSec=5
+# memory cap so a runaway can never starve the container
+MemoryMax=768M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/noc-bot
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
