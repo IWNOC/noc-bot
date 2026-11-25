@@ -235,3 +235,21 @@ func clip(s string, n int) string {
 	}
 	return string(r[:n-1]) + "…"
 }
+
+// Group is a Slack user group.
+type Group struct{ ID, Handle, Name string }
+
+// Groups lists the workspace's user groups (needs usergroups:read).
+func (a *App) Groups(ctx context.Context) ([]Group, error) {
+	gs, err := a.API.GetUserGroupsContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Group, 0, len(gs))
+	for _, g := range gs {
+		if g.DateDelete == 0 {
+			out = append(out, Group{ID: g.ID, Handle: g.Handle, Name: g.Name})
+		}
+	}
+	return out, nil
+}

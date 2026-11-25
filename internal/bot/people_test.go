@@ -172,11 +172,19 @@ func TestTemplateRegexp(t *testing.T) {
 	}
 }
 
-func TestTeamSetupFromMention(t *testing.T) {
-	reply := `{"teams":[{"team":"l2l3","mention":"<!subteam^S0ABC|@l2l3>","description":"スイッチとルーター","hosts":["eps-rt-*"]},
-	{"team":"server","mention":"<!subteam^S0FAKE>","description":"made up"}]}`
+func (f *fakeSlack) Groups(context.Context) ([]slackapp.Group, error) {
+	return []slackapp.Group{{ID: "S07LLMYUXT7", Handle: "team-l2l3"}, {ID: "S07LGV7MM4N", Handle: "team-server"}, {ID: "S07LS37RWAG", Handle: "team-l1"}}, nil
+}
+
+// Plain-text "@team-l2l3" (not a real mention) still resolves through the workspace's groups;
+// a group that does not exist is dropped.
+func TestTeamSetupFromPlainHandles(t *testing.T) {
+	reply := `{"intent":"team_setup","teams":[
+	{"team":"l2l3","group":"team-l2l3","description":"ルーター・スイッチ・BGP","hosts":["eps-rt-*"]},
+	{"team":"l1","group":"team-l1","description":"配線・光"},
+	{"team":"server","group":"team-made-up","description":"x"}]}`
 	b, fs, _, _ := setup(t, reply)
-	b.OnMention(context.Background(), "C1", "ts9", "<@UBOT> スイッチとルーターは <!subteam^S0ABC|@l2l3> で", "U1")
+	b.OnMention(context.Background(), "C1", "ts9", "<@UBOT> チームは @team-l2l3 と @team-l1、それぞれ担当", "U1")
 	if len(fs.cards) != 1 {
 		t.Fatalf("cards %d posts %v", len(fs.cards), fs.posts)
 	}
@@ -184,14 +192,28 @@ func TestTeamSetupFromMention(t *testing.T) {
 	for k, v := range fs.cards {
 		id, card = k, v
 	}
-	if strings.Contains(card, "S0FAKE") {
-		t.Fatal("a mention not in the message must be dropped")
+	if strings.Contains(card, "made-up") {
+		t.Fatal("a group that does not exist must be dropped")
 	}
 	b.OnProposal(context.Background(), id, true, "U1")
-	if tm, _ := b.team("l2l3"); tm.Mention != "<!subteam^S0ABC|@l2l3>" && tm.Mention != "<!subteam^S0ABC>" {
-		t.Fatalf("team not applied: %+v", tm)
+	if tm, _ := b.team("l2l3"); tm.Mention != "<!subteam^S07LLMYUXT7>" {
+		t.Fatalf("l2l3 not applied: %+v", tm)
+	}
+	if tm, ok := b.team("l1"); !ok || tm.Mention != "<!subteam^S07LS37RWAG>" {
+		t.Fatalf("l1 not added: %+v", tm)
 	}
 	if s := b.senderFor("", "eps-rt-02"); s.Team != "l2l3" {
 		t.Fatalf("sender rule not applied: %+v", s)
+	}
+	if !strings.Contains(b.describeTeams(), "→ <!subteam^S07LS37RWAG>") {
+		t.Fatal(b.describeTeams())
+	}
+}
+
+func TestSettingsQuestionShowsTeams(t *testing.T) {
+	b, fs, _, _ := setup(t, `{"intent":"show_teams","teams":[]}`)
+	b.OnMention(context.Background(), "C1", "ts9", "<@UBOT> まだメンション未設定状態になってる？", "U1")
+	if len(fs.posts) != 1 || !strings.Contains(fs.posts[0], "今の担当設定") {
+		t.Fatalf("posts %v", fs.posts)
 	}
 }

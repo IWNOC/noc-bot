@@ -512,9 +512,11 @@ func (b *Bot) investigate(ctx context.Context, in incident.Incident, ask, channe
 	if in.ID != "" {
 		user += fmt.Sprintf("対象の通知: %s（%s）パターン: %s 事実: %v\n", in.Kind, in.Host, in.Template, in.Facts)
 	}
-	out, steps, err := b.LLM.Run(ctx, []llm.Message{{Role: "system", Content: investigateSystem}, {Role: "user", Content: user}}, b.Tools(), 4, 900, false)
+	out, steps, err := b.LLM.Run(ctx, []llm.Message{{Role: "system", Content: investigateSystem}, {Role: "user", Content: user}}, b.Tools(), 5, 1500, false)
 	if err != nil {
-		out = "調べている途中で失敗しました: " + err.Error()
+		out = "調べきれませんでした（" + err.Error() + "）。質問を短く区切って、もう一度お願いします。"
+	} else if len([]rune(strings.TrimSpace(out))) < 20 {
+		out = "答えが途中で切れました。もう一度お願いします。"
 	}
 	used := make([]string, 0, len(steps))
 	for _, s := range steps {
@@ -533,20 +535,36 @@ func (b *Bot) investigate(ctx context.Context, in incident.Incident, ask, channe
 
 // ---------------------------------------------------------------- @mentions: team setup and questions
 
+// Directory lists Slack user groups, so "@team-server" typed as plain text can still be resolved.
+type Directory interface {
+	Groups(ctx context.Context) ([]slackapp.Group, error)
+}
+
 type teamSetup struct {
 	Team        string   `json:"team"`
-	Mention     string   `json:"mention"`
+	Group       string   `json:"group"`   // user group handle, e.g. team-server
+	Mention     string   `json:"mention"` // <!subteam^ID>, filled in by noc-bot from the directory
 	Description string   `json:"description"`
 	Hosts       []string `json:"hosts"`
 }
 
-var subteamRe = regexp.MustCompile(`<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>`)
+var subteamRe = regexp.MustCompile(`<!subteam\^([A-Z0-9]+)(?:\|@?([^>]*))?>`)
 
-const teamsSystem = `An operator tells the NOC bot which Slack user group owns which equipment.
-Reply with JSON only: {"teams": [{"team": "<one of: l2l3, server, auth, wifi>", "mention": "<the exact <!subteam^...> token from the message>",
-"description": "<what they own, Japanese>", "hosts": ["<hostname globs they named or that clearly match, e.g. eps-rt-*>"]}]}
-Use only mention tokens that appear in the message. team: l2l3 = switches, routers, BGP, links; server = servers, Kubernetes, DHCP, DNS, NTP, syslog;
-auth = RADIUS, eduroam, OpenRoaming; wifi = access points, wireless controller.`
+// teamIDs noc-bot knows. l2l3/server/auth/wifi are also laya's options; others (l1) only route mentions.
+var knownTeamIDs = []string{"l1", "l2l3", "server", "auth", "wifi"}
+
+const mentionSystem = `You route a message an operator sent to the NOC bot (@noc-bot) and, for team setup, read it.
+Reply with JSON only:
+{"intent": "team_setup" | "show_teams" | "question",
+ "teams": [{"team": "<team id>", "group": "<user group handle without @>", "description": "<what they own, Japanese>", "hosts": ["<hostname globs>"]}]}
+intent:
+- "team_setup": the operator says which user group owns what, or lists the teams to use for mentions.
+- "show_teams": the operator asks about the bot's own team/mention settings (e.g. is the mention set yet?).
+- "question": anything about the network, logs or incidents.
+Team ids: l1 = cabling, optics, power, physical layer; l2l3 = switches, routers, BGP, VyOS, links;
+server = servers, Kubernetes, DHCP (Kea), DNS (Unbound), NTP, syslog; auth = RADIUS, eduroam, OpenRoaming;
+wifi = access points (AP), wireless controller, CV-CUE.
+Only use user group handles from the list given. "teams" is empty unless intent is team_setup.`
 
 // OnMention handles "@noc-bot ...".
 func (b *Bot) OnMention(ctx context.Context, channel, thread, text, user string) {
@@ -555,29 +573,38 @@ func (b *Bot) OnMention(ctx context.Context, channel, thread, text, user string)
 		return
 	}
 	body := strings.TrimSpace(regexp.MustCompile(`<@[A-Z0-9]+>`).ReplaceAllString(text, ""))
-	switch {
-	case strings.Contains(body, "担当設定") && !subteamRe.MatchString(body):
+	if body == "" {
 		pr.PostIn(ctx, channel, thread, b.describeTeams())
-	case subteamRe.MatchString(body) && b.LLM != nil:
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		m, err := b.LLM.Chat(ctx, []llm.Message{{Role: "system", Content: teamsSystem}, {Role: "user", Content: body + "\n\nHosts currently sending logs: " + strings.Join(b.knownHosts(), ", ")}}, nil, 800, true)
-		out := m.Content
-		var got struct {
-			Teams []teamSetup `json:"teams"`
-		}
-		if err != nil || json.Unmarshal([]byte(jsonPart(out)), &got) != nil || len(got.Teams) == 0 {
-			pr.PostIn(ctx, channel, thread, "担当の設定として読み取れませんでした。例：「@noc-bot スイッチとルーターは @l2l3、サーバーは @server」")
-			return
-		}
-		valid := got.Teams[:0]
-		for _, t := range got.Teams {
-			if strings.Contains(body, t.Mention) && subteamRe.MatchString(t.Mention) && (lineTeams[t.Team] || incidentTeams[t.Team]) {
-				valid = append(valid, t)
-			}
-		}
+		return
+	}
+	if b.LLM == nil {
+		pr.PostIn(ctx, channel, thread, b.describeTeams())
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	groups := b.groups(ctx)
+	var gl strings.Builder
+	for _, g := range groups {
+		fmt.Fprintf(&gl, "- %s (%s)\n", g.Handle, g.Name)
+	}
+	m, err := b.LLM.Chat(ctx, []llm.Message{{Role: "system", Content: mentionSystem}, {Role: "user", Content: fmt.Sprintf(
+		"Message:\n%s\n\nSlack user groups in this workspace:\n%s\nHosts currently sending logs: %s",
+		body, gl.String(), strings.Join(b.knownHosts(), ", "))}}, nil, 1000, true)
+	var got struct {
+		Intent string      `json:"intent"`
+		Teams  []teamSetup `json:"teams"`
+	}
+	if err != nil || json.Unmarshal([]byte(jsonPart(m.Content)), &got) != nil {
+		got.Intent = "question"
+	}
+	switch got.Intent {
+	case "show_teams":
+		pr.PostIn(ctx, channel, thread, b.describeTeams())
+	case "team_setup":
+		valid := b.resolveTeams(body, got.Teams, groups)
 		if len(valid) == 0 {
-			pr.PostIn(ctx, channel, thread, "メンション先のグループを読み取れませんでした。")
+			pr.PostIn(ctx, channel, thread, "担当の設定として読み取れませんでした。Slack のユーザーグループ名（例：team-server）と、何を担当するかを書いてください。")
 			return
 		}
 		p := &proposal{ID: newID(), User: user, Thread: thread, Channel: channel, Teams: valid, At: b.Now()}
@@ -587,19 +614,67 @@ func (b *Bot) OnMention(ctx context.Context, channel, thread, text, user string)
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "📝 *担当の設定を次のように理解しました*（<@%s>）\n", user)
 		for _, t := range valid {
-			fmt.Fprintf(&sb, "• *%s* → %s：%s", t.Team, t.Mention, t.Description)
+			fmt.Fprintf(&sb, "• *%s* → @%s：%s", t.Team, t.Group, t.Description)
 			if len(t.Hosts) > 0 {
 				fmt.Fprintf(&sb, "（%s）", strings.Join(t.Hosts, ", "))
 			}
 			sb.WriteString("\n")
 		}
-		sb.WriteString("判断できないときは、このチャンネルに投稿します（メンションなし）。")
+		sb.WriteString("登録すると、重要な障害ではこのグループにメンションします。判断できないときは、このチャンネルに投稿します（メンションなし）。")
 		b.postCardIn(ctx, channel, thread, p.ID, sb.String())
 	default:
-		if b.LLM != nil && body != "" {
-			b.investigate(ctx, incident.Incident{}, body, channel, thread)
+		b.investigate(ctx, incident.Incident{}, body, channel, thread)
+	}
+}
+
+func (b *Bot) groups(ctx context.Context) []slackapp.Group {
+	d, ok := b.Notify.(Directory)
+	if !ok {
+		return nil
+	}
+	gs, err := d.Groups(ctx)
+	if err != nil {
+		b.Log.Warn("slack user groups", "err", err)
+	}
+	return gs
+}
+
+// resolveTeams keeps only teams whose user group exists (by handle, or as a real mention in the
+// message) and fills in the mention token. Nothing the LLM made up survives.
+func (b *Bot) resolveTeams(body string, in []teamSetup, groups []slackapp.Group) []teamSetup {
+	byHandle := map[string]slackapp.Group{}
+	byID := map[string]slackapp.Group{}
+	for _, g := range groups {
+		byHandle[strings.ToLower(g.Handle)] = g
+		byID[g.ID] = g
+	}
+	for _, m := range subteamRe.FindAllStringSubmatch(body, -1) {
+		if _, ok := byID[m[1]]; !ok {
+			g := slackapp.Group{ID: m[1], Handle: strings.TrimPrefix(m[2], "@")}
+			byID[m[1]] = g
+			if g.Handle != "" {
+				byHandle[strings.ToLower(g.Handle)] = g
+			}
 		}
 	}
+	known := map[string]bool{}
+	for _, t := range knownTeamIDs {
+		known[t] = true
+	}
+	for _, t := range b.TeamNames() {
+		known[t] = true
+	}
+	var out []teamSetup
+	for _, t := range in {
+		g, ok := byHandle[strings.ToLower(strings.TrimPrefix(t.Group, "@"))]
+		if !ok || !known[t.Team] {
+			continue
+		}
+		t.Group = g.Handle
+		t.Mention = "<!subteam^" + g.ID + ">"
+		out = append(out, t)
+	}
+	return out
 }
 
 func (b *Bot) postCardIn(ctx context.Context, channel, thread, id, text string) {
@@ -614,7 +689,7 @@ func (b *Bot) applyTeams(ctx context.Context, p *proposal, user string) string {
 	b.mu.Lock()
 	for _, t := range p.Teams {
 		cur := b.teams[t.Team]
-		cur.Mention = subteamRe.FindString(t.Mention)
+		cur.Mention = t.Mention
 		if t.Description != "" {
 			cur.Description = t.Description
 		}
@@ -643,6 +718,8 @@ func (b *Bot) describeTeams() string {
 		m := t.Mention
 		if m == "" || strings.Contains(m, "XXXX") || strings.Contains(m, "YYYY") {
 			m = "（メンション未設定）"
+		} else {
+			m = "→ " + m
 		}
 		fmt.Fprintf(&sb, "• *%s* %s：%s\n", name, m, t.Description)
 	}
@@ -651,7 +728,7 @@ func (b *Bot) describeTeams() string {
 		fmt.Fprintf(&sb, "  - %s → %s（Slack で追加）\n", s.Host, s.Team)
 	}
 	b.mu.Unlock()
-	sb.WriteString("変えるには：「@noc-bot スイッチとルーターは @l2l3、サーバーは @server」のように書いてください。")
+	sb.WriteString("変えるには、たとえば「@noc-bot ルーター・スイッチ・BGP は team-l2l3、サーバー・k8s・Kea・Unbound は team-server、AP は team-ap、配線・光は team-l1」と書いてください。")
 	return sb.String()
 }
 
