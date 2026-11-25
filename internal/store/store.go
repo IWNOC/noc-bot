@@ -135,3 +135,21 @@ func (s *Store) Get(ctx context.Context, k string) ([]byte, error) {
 	}
 	return v, err
 }
+
+// Subjects lists the subjects a desk has already decided (e.g. template ids for the line desk).
+func (s *Store) Subjects(ctx context.Context, desk string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT subject FROM decisions WHERE desk=?`, desk)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out[v] = true
+	}
+	return out, rows.Err()
+}

@@ -26,7 +26,9 @@ func NewServer(buf int, log *slog.Logger) *Server {
 func (s *Server) push(raw string) {
 	l, err := Parse(raw)
 	if err != nil {
-		s.Bad.Add(1)
+		if n := s.Bad.Add(1); n <= 20 && s.Log != nil {
+			s.Log.Warn("unparsable line", "n", n, "raw", clip(raw, 300))
+		}
 		return
 	}
 	select {
@@ -81,4 +83,11 @@ func (s *Server) ServeUDP(ctx context.Context, addr string) error {
 		}
 		s.push(string(buf[:n]))
 	}
+}
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

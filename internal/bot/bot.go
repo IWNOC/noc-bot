@@ -48,6 +48,7 @@ type Bot struct {
 	lineQ    chan rules.Signal
 	mu       sync.Mutex
 	examples map[string][]string // template id -> recent raw lines
+	judged   map[string]bool     // template ids the line desk has decided or that are queued for it
 	Now      func() time.Time
 }
 
@@ -60,7 +61,10 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	}
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
-		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, Now: time.Now}
+		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, Now: time.Now}
+	if done, err := st.Subjects(context.Background(), "line"); err == nil {
+		b.judged = done
+	}
 	if snap, err := st.Get(context.Background(), "drain"); err == nil && snap != nil {
 		if err := b.Miner.Restore(snap); err != nil {
 			log.Warn("drain restore", "err", err)
@@ -84,12 +88,34 @@ func (b *Bot) Handle(l ingest.Line) {
 	b.examples[m.ID] = ex
 	b.mu.Unlock()
 	meta := rules.TemplateMeta{ID: m.ID, Text: m.Template, Program: l.Program, Host: l.Host, From: l.From, Example: l.Msg}
-	if sig := b.Rules.Observe(meta, m.New, l.Recv, l.Skew()); sig != nil {
-		select {
-		case b.lineQ <- *sig:
-		default:
-			b.Log.Warn("line desk queue full, dropping", "template", m.ID)
+	sig := b.Rules.Observe(meta, m.New, l.Recv, l.Skew())
+	if b.Laya == nil {
+		return
+	}
+	// A template learned before laya was reachable (or before a restart) is not new any more, but
+	// the line desk has never seen it: send it once.
+	b.mu.Lock()
+	seen := b.judged[m.ID]
+	if !seen {
+		b.judged[m.ID] = true
+	}
+	b.mu.Unlock()
+	if seen {
+		return
+	}
+	if sig == nil {
+		if b.Rules.Covering(meta, l.Recv) != nil {
+			return
 		}
+		sig = &rules.Signal{Kind: rules.KindNew, Key: "new:" + m.ID, Host: l.Host, From: l.From, Template: m.Template, TplID: m.ID, At: l.Recv}
+	}
+	select {
+	case b.lineQ <- *sig:
+	default:
+		b.mu.Lock()
+		delete(b.judged, m.ID) // try again on a later line
+		b.mu.Unlock()
+		b.Log.Warn("line desk queue full, will retry", "template", m.ID)
 	}
 }
 
@@ -266,6 +292,9 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 	d, err := b.Laya.Decide(ctx, "line", text)
 	if err != nil {
 		b.Log.Warn("laya line desk", "err", err)
+		b.mu.Lock()
+		delete(b.judged, s.TplID) // laya unreachable: ask again on a later line
+		b.mu.Unlock()
 		return
 	}
 	id := b.record(ctx, "line", s.TplID, text, d)
