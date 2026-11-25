@@ -292,9 +292,13 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 	d, err := b.Laya.Decide(ctx, "line", text)
 	if err != nil {
 		b.Log.Warn("laya line desk", "err", err)
-		b.mu.Lock()
-		delete(b.judged, s.TplID) // laya unreachable: ask again on a later line
-		b.mu.Unlock()
+		// Ask again later only if laya never answered. A reply we could not read was still decided
+		// (and the teacher may already have taught laya from it), so asking again would teach twice.
+		if laya.Unreached(err) {
+			b.mu.Lock()
+			delete(b.judged, s.TplID)
+			b.mu.Unlock()
+		}
 		return
 	}
 	id := b.record(ctx, "line", s.TplID, text, d)

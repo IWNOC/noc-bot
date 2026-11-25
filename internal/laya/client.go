@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,14 +15,14 @@ import (
 
 // Answer is one question's answer as laya-svc returns it.
 type Answer struct {
-	Answer     any      `json:"answer"`
-	Confidence float64  `json:"confidence"`
-	Route      string   `json:"route"`
-	Source     string   `json:"source"`    // "vega" or "teacher"
-	Escalated  string   `json:"escalated"` // why the teacher was asked, if it was
-	Abstain    bool     `json:"abstain"`
-	Readout    string   `json:"readout"` // "engine" or "head" (learned)
-	Set        []string `json:"prediction_set"`
+	Answer     any     `json:"answer"`
+	Confidence float64 `json:"confidence"`
+	Route      string  `json:"route"`
+	Source     string  `json:"source"`    // "vega" or "teacher"
+	Escalated  string  `json:"escalated"` // why the teacher was asked, if it was
+	Abstain    bool    `json:"abstain"`
+	Readout    string  `json:"readout"`        // "engine" or "head" (learned)
+	Set        []any   `json:"prediction_set"` // option names, levels or true/false
 }
 
 // Bool reads a boolean answer.
@@ -74,6 +75,17 @@ func New(url, token string, timeout time.Duration) *Client {
 	return &Client{URL: url, Token: token, HTTP: &http.Client{Timeout: timeout}}
 }
 
+// unreached marks errors where laya-svc never produced an answer (connection, timeout, 5xx).
+type unreached struct{ error }
+
+func (u unreached) Unwrap() error { return u.error }
+
+// Unreached reports whether err means laya-svc did not decide anything, so retrying is safe.
+func Unreached(err error) bool {
+	var u unreached
+	return errors.As(err, &u)
+}
+
 func (c *Client) post(ctx context.Context, path string, body, out any) error {
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -90,12 +102,16 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return unreached{err}
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("laya-svc %s: HTTP %d: %.200s", path, resp.StatusCode, data)
+		err := fmt.Errorf("laya-svc %s: HTTP %d: %.200s", path, resp.StatusCode, data)
+		if resp.StatusCode >= 500 {
+			return unreached{err}
+		}
+		return err
 	}
 	if out == nil {
 		return nil
