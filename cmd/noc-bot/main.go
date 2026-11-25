@@ -124,5 +124,9 @@ func run(cfgPath string, log *slog.Logger) error {
 	b.Run(ctx, in.Out)
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(sctx)
+	if err := srv.Shutdown(sctx); err != nil {
+		// a teacher request still waiting on the LLM: laya-svc treats a dropped answer as "no answer"
+		log.Warn("http shutdown", "err", err)
+	}
+	return nil
 }
