@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; background: #fff; overflow: hidden; }
+  body { font-family: "Noto Sans CJK JP", "Noto Sans JP", sans-serif; color: #202124; position: relative; }
+
+  .title { position: absolute; left: 100px; top: 96px; font-size: 76px; font-weight: 400; letter-spacing: 1px; }
+  .lead  { position: absolute; left: 100px; top: 222px; font-size: 44px; font-weight: 400; color: #3c4043; }
+  .lead b { color: #4285f4; font-weight: 700; }
+
+  /* ---------- left: the Slack alert as people see it ---------- */
+  .shot { position: absolute; left: 100px; top: 318px; width: 850px; height: 548px; border: 2px solid #9aa0a6;
+          background: #fff; padding: 30px 34px; font-family: "Noto Sans CJK JP", sans-serif; }
+  .msg { display: flex; gap: 20px; }
+  .avatar { width: 64px; height: 64px; border-radius: 12px; background: #e8453c; flex: none; position: relative; }
+  .avatar::before, .avatar::after { content: ""; position: absolute; top: 22px; width: 10px; height: 14px; border-radius: 5px; background: #fff; }
+  .avatar::before { left: 18px; } .avatar::after { right: 18px; }
+  .who { font-size: 26px; font-weight: 700; }
+  .who .app { font-size: 15px; font-weight: 700; color: #616061; background: #e8e8e8; border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: 3px; }
+  .who .time { font-size: 19px; font-weight: 400; color: #616061; margin-left: 10px; }
+  .head { font-size: 27px; font-weight: 700; margin-top: 6px; line-height: 1.45; }
+  .body { font-size: 24px; line-height: 1.6; margin-top: 8px; color: #1d1c1d; }
+  .meta { font-size: 18px; color: #616061; margin-top: 10px; font-style: italic; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .btn { font-size: 19px; border: 1.5px solid #bbb; border-radius: 6px; padding: 6px 14px; color: #1d1c1d; background: #fff; }
+  .btn.primary { background: #007a5a; border-color: #007a5a; color: #fff; font-weight: 700; }
+  .btn.danger { color: #e01e5a; border-color: #e01e5a; font-weight: 700; }
+  .thread { margin: 28px 0 0 84px; border-left: 4px solid #e0e0e0; padding-left: 20px; }
+  .reply { display: flex; gap: 14px; margin-top: 14px; }
+  .reply .av { width: 40px; height: 40px; border-radius: 8px; flex: none; }
+  .reply .t { font-size: 22px; line-height: 1.55; }
+  .reply .n { font-weight: 700; }
+  .mention { color: #1264a3; background: #e8f5fa; border-radius: 3px; padding: 0 3px; }
+  .caption { position: absolute; left: 100px; top: 884px; width: 850px; text-align: center; font-size: 34px; color: #3c4043; }
+
+  /* ---------- right: the diagram ---------- */
+  .box { position: absolute; border: 2.5px solid #202124; background: #fff; font-size: 34px; font-weight: 700;
+         display: flex; align-items: center; justify-content: center; color: #3c4043; }
+  .box small { display: block; font-size: 22px; font-weight: 400; color: #5f6368; margin-top: 2px; }
+  .box.col { flex-direction: column; text-align: center; line-height: 1.25; }
+  .core { border: 4px solid #ea4335; color: #ea4335; font-size: 42px; }
+  .core small { color: #ea4335; }
+  .brain { background: #4285f4; border: none; color: #fff; }
+  .brain small { color: #e8f0fe; }
+  .note { position: absolute; font-size: 28px; color: #3c4043; line-height: 1.3; text-align: center; white-space: nowrap; }
+  .note.l { text-align: right; }
+  .note.blue { color: #1a73e8; }
+  .slack { position: absolute; display: flex; align-items: center; gap: 14px; font-family: "Noto Sans CJK JP", sans-serif;
+           font-size: 56px; font-weight: 900; letter-spacing: -1px; color: #1d1c1d; }
+  .kpi { position: absolute; font-size: 24px; color: #5f6368; }
+  .kpi b { font-size: 40px; color: #202124; font-weight: 700; }
+  .kpi .arrow { color: #ea4335; font-weight: 700; margin: 0 4px; }
+  svg { position: absolute; left: 0; top: 0; }
+</style>
+</head>
+<body>
+  <div class="title">AI オペレーター: noc-bot</div>
+  <div class="lead"><b>ローカル LLM・laya</b> でログを見張り、<b>会話しながら賢くなる</b>運用担当を作りました！</div>
+
+  <!-- left: what operators actually see -->
+  <div class="shot">
+    <div class="msg">
+      <div class="avatar"></div>
+      <div>
+        <div class="who">noc-bot<span class="app">アプリ</span><span class="time">11:09</span></div>
+        <div class="head">🔴 eps-rt-01 の BGP（AS45679）が切断→再接続</div>
+        <div class="body">v4・v6 の両方で Hold Timer Expired。15秒で復旧。<br>同じ物理回線の瞬断の可能性（要確認）。</div>
+        <div class="meta">担当：team-l2l3　すぐ知らせた理由：エラー・状態変化で、いつもと違うと判断</div>
+        <div class="btns">
+          <span class="btn primary">🔴 すぐ知らせて正解</span>
+          <span class="btn">🟡 まとめでいい</span>
+          <span class="btn">🔕 通知不要</span>
+          <span class="btn danger">❌ 誤検知</span>
+        </div>
+      </div>
+    </div>
+    <div class="thread">
+      <div class="reply">
+        <div class="av" style="background:#9aa0a6"></div>
+        <div class="t"><span class="n">運用メンバー</span><br>上流の工事っぽい。<span class="mention">@noc-bot</span> 相手の AS ってどこ？</div>
+      </div>
+      <div class="reply">
+        <div class="av" style="background:#e8453c"></div>
+        <div class="t"><span class="n">noc-bot</span><br>AS45679 は TOMOCHA-NET（PeeringDB: Non-Profit）。<br>「上流工事」として覚えますか？ <span class="btn primary" style="font-size:17px;padding:3px 10px">登録</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="caption">▲ Slack への通知（ボタンと会話で AI に教える）</div>
+
+  <!-- right: diagram (x 1000-1820) -->
+  <svg width="1920" height="1080" viewBox="0 0 1920 1080">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#3c4043"/>
+      </marker>
+      <marker id="ahb" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#1a73e8"/>
+      </marker>
+    </defs>
+    <g fill="none" stroke="#3c4043" stroke-width="4" stroke-linecap="round">
+      <path d="M1165,396 C1165,480 1290,480 1300,556" marker-end="url(#ah)"/>
+      <path d="M1650,396 C1650,480 1370,470 1360,556" marker-end="url(#ah)"/>
+      <path d="M1330,668 L1330,846" marker-end="url(#ah)"/>
+    </g>
+    <g fill="none" stroke="#1a73e8" stroke-width="4" stroke-linecap="round">
+      <path d="M1486,612 L1594,612" marker-start="url(#ahb)" marker-end="url(#ahb)"/>
+      <path d="M1470,905 C1640,905 1712,860 1712,690" stroke-dasharray="2 12" marker-end="url(#ahb)"/>
+    </g>
+  </svg>
+
+  <div class="box" style="left:1000px; top:300px; width:330px; height:96px; font-size:31px;">スイッチ/ルーター</div>
+  <div class="box col" style="left:1480px; top:300px; width:340px; height:96px; font-size:31px;">サーバー<small>Kea・Unbound・RADIUS</small></div>
+  <div class="note" style="left:1330px; top:326px; width:150px; font-size:26px;">syslog<br>を転送</div>
+
+  <div class="box col core" style="left:1176px; top:556px; width:310px; height:112px;">noc-bot<small>型分け・件数・ルール</small></div>
+  <div class="box col brain" style="left:1600px; top:556px; width:220px; height:132px; font-size:32px;">laya<small>＋ローカル LLM</small></div>
+  <div class="note blue l" style="left:1540px; top:478px; width:280px; font-size:24px;">「変？」を判断<br>Web・AS も自分で調査</div>
+
+  <div class="note l" style="left:1000px; top:704px; width:304px; font-size:26px;">意味のあるものは<br>すぐ通知<br>他は30分ごとにまとめ</div>
+
+  <div class="slack" style="left:1196px; top:858px;">
+    <svg width="58" height="58" viewBox="0 0 60 60" style="position:static">
+      <rect x="22" y="2"  width="10" height="26" rx="5" fill="#36c5f0"/><rect x="4"  y="22" width="18" height="10" rx="5" fill="#36c5f0"/>
+      <rect x="28" y="22" width="26" height="10" rx="5" fill="#2eb67d"/><rect x="38" y="4"  width="10" height="18" rx="5" fill="#2eb67d"/>
+      <rect x="28" y="32" width="10" height="26" rx="5" fill="#ecb22e"/><rect x="38" y="38" width="18" height="10" rx="5" fill="#ecb22e"/>
+      <rect x="6"  y="28" width="26" height="10" rx="5" fill="#e01e5a"/><rect x="12" y="38" width="10" height="18" rx="5" fill="#e01e5a"/>
+    </svg>slack
+  </div>
+  <div class="note blue l" style="left:1500px; top:920px; width:320px; font-size:24px;">ボタン・会話から学習</div>
+
+  <div class="kpi" style="left:1000px; top:990px;">単独の通知 <b>90</b><span class="arrow">→</span><b>23</b> 件</div>
+  <div class="kpi" style="left:1420px; top:990px;">「変だ」判定 <b>36</b><span class="arrow">→</span><b>18</b> %</div>
+</body>
+</html>
