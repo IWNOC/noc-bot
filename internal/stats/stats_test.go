@@ -41,9 +41,27 @@ func TestStopped(t *testing.T) {
 	tr := NewTracker()
 	k := Key{"sender", "kea"}
 	start := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
-	now := feed(tr, k, start, 180, 5) // 300/h
-	now = feed(tr, k, now, 61, 0)
+	now := feed(tr, k, start, 180, 5) // 300/h, every minute
+	now = feed(tr, k, now, 16, 0)
 	if i, _ := tr.Get(k, now); i.Level != LevelStopped {
 		t.Fatalf("got %s (base %.1f)", i.Level, i.Baseline)
+	}
+}
+
+// A sender that logs in bursts is never STOPPED, however many lines a burst had.
+func TestBurstySenderNeverStopped(t *testing.T) {
+	tr := NewTracker()
+	k := Key{"sender", "iw26-ntp-01"}
+	now := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 240; i++ {
+		n := 0
+		if i%30 == 0 {
+			n = 40 // a burst every half hour
+		}
+		now = feed(tr, k, now, 1, n)
+	}
+	now = feed(tr, k, now, 60, 0)
+	if i, _ := tr.Get(k, now); i.Level == LevelStopped {
+		t.Fatalf("bursty sender reported STOPPED")
 	}
 }

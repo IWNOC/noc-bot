@@ -31,6 +31,12 @@ const composeSystem = `あなたはイベントネットワークの NOC の運�
 - 数字・IP アドレス・時刻を書くときは、与えられた情報か道具の結果にあるものを正確に写す（書かなくてもよい）。
 - 生のログは貼らない（スレッドに別に添付される）。
 - 運用者が教えてくれたこと（記憶）があれば踏まえる。
+出来事の種類の意味（言い換えて強くしないこと）:
+- rate: あるログのパターンが普段よりずっと多く出ている
+- silence: ある送信元から**ログが届かなくなった**。機器やサービスが止まったとは限らない（ログ設定・経路・送信元の都合もありうる）
+- clock_skew: 送信元が書いた時刻が、受信した時刻とずれている（その機器の時計か設定の問題。NTP サーバーの停止とは限らない）
+- odd: 初めて見る、またはいつもと違うと判断されたログ
+- window: 全体を見て、いつもと違うところがありそう
 JSON だけで答える：{"title": "<一行の見出し。絵文字なし>", "body": "<本文。Slack の mrkdwn>"}`
 
 func (b *Bot) compose(ctx context.Context, in incident.Incident) (title, body, note string, ok bool) {
@@ -58,13 +64,21 @@ func (b *Bot) compose(ctx context.Context, in incident.Incident) (title, body, n
 		fmt.Fprintf(&sb, "運用者が教えてくれたこと: %s\n", m)
 	}
 	input := sb.String()
-	out, steps, err := lm.Run(ctx, []llm.Message{{Role: "system", Content: composeSystem}, {Role: "user", Content: input}}, b.Tools(), 3, 1200, true)
+	msgs := []llm.Message{{Role: "system", Content: composeSystem}, {Role: "user", Content: input}}
+	out, steps, err := lm.Run(ctx, msgs, b.Tools(), 3, 1500, true)
 	if err != nil {
 		b.Log.Warn("compose", "incident", in.ID, "err", err)
 		return "", "", "", false
 	}
 	var got struct{ Title, Body string }
 	if json.Unmarshal([]byte(jsonPart(out)), &got) != nil || strings.TrimSpace(got.Title) == "" {
+		// an empty or cut reply: ask once more, without tools, for the JSON only
+		if m, err := lm.Chat(ctx, msgs, nil, 1500, true); err == nil {
+			out = m.Content
+			json.Unmarshal([]byte(jsonPart(out)), &got)
+		}
+	}
+	if strings.TrimSpace(got.Title) == "" {
 		b.Log.Warn("compose: unparsable", "out", clipText(out, 200))
 		return "", "", "", false
 	}

@@ -208,7 +208,8 @@ func (t *Teacher) Answer(ctx context.Context, req Request) (map[string]any, map[
 
 const system = `You label records for a network operations centre (NOC) running a three-day event network.
 Answer each question about the record. Use the tools to check facts when they help.
-For every answer you give, quote the evidence: the words in the record or the tool result that decide it.
+For every answer you give, quote the evidence: the few words in the record or the tool result that decide it
+(at most 150 characters; quote, do not explain).
 If you cannot back an answer with evidence, leave that question out. Never guess.
 Reply with JSON only: {"answers": {"<question id>": {"answer": <value>, "evidence": "<quote>"}}}
 Values: boolean questions take true or false; choice questions take one option name exactly as listed;
@@ -228,7 +229,7 @@ func (t *Teacher) ask(ctx context.Context, desk, text, extra string, qs map[stri
 		}
 		b.WriteString("\n")
 	}
-	content, _, err := t.LLM.Run(ctx, []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: b.String()}}, t.Tools, 3, 1500, true) // evidence quotes are long; 800 tokens cut replies off mid-JSON
+	content, _, err := t.LLM.Run(ctx, []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: b.String()}}, t.Tools, 3, 2500, true) // long evidence quotes cut replies off mid-JSON; quotes are now capped too
 	if err != nil {
 		return nil, nil, err
 	}

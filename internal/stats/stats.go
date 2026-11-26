@@ -35,6 +35,7 @@ type Series struct {
 	baseline  float64          // events per hour, exponentially smoothed
 	baseHours float64          // hours of history behind the baseline
 	baseHist  [minutes]float64 // baseline as it was at each of the last 60 minutes
+	active    float64          // share of minutes with at least one event (smoothed): how steady it talks
 }
 
 func (s *Series) roll(now time.Time) {
@@ -92,6 +93,17 @@ func (s *Series) updateBaseline() {
 	}
 	s.baseHours += 1.0 / 60
 	s.baseHist[s.cur%minutes] = s.baseline
+	const activeHalfLifeMin = 120
+	beta := 1 - math.Pow(0.5, 1.0/activeHalfLifeMin)
+	on := 0.0
+	if s.buckets[(s.cur-1+minutes)%minutes] > 0 {
+		on = 1
+	}
+	if s.baseHours <= 1.0/60 {
+		s.active = on
+	} else {
+		s.active += beta * (on - s.active)
+	}
 }
 
 // priorBaseline is the baseline as it stood an hour ago, so a burst in the last hour does not
@@ -116,9 +128,12 @@ func (s *Series) Level(now time.Time) Level {
 	}
 	cur := float64(s.LastHour())
 	base := s.priorBaseline()
-	switch {
-	case cur == 0 && base >= 30:
+	// STOPPED means "something that talks nearly every minute has said nothing for 15 minutes".
+	// Senders that log in bursts (an NTP server, logrotate) are never STOPPED, however busy a burst was.
+	if s.active >= 0.8 && s.baseHours >= 2 && s.LastMinutes(15) == 0 {
 		return LevelStopped
+	}
+	switch {
 	case cur >= 5 && cur >= 10*math.Max(base, 0.5):
 		return LevelFarAbove
 	case cur >= 3 && cur >= 3*math.Max(base, 0.5):

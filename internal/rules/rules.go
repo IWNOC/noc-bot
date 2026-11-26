@@ -169,7 +169,9 @@ func (e *Engine) coveringLocked(m TemplateMeta, now time.Time) *config.KnownIssu
 func (e *Engine) Evaluate(now time.Time) []Signal {
 	var out []Signal
 	for _, in := range e.tr.All("template", now) {
-		if in.Level != stats.LevelFarAbove && in.Level != stats.LevelStopped {
+		// a log pattern going quiet is usually the problem ending (or a periodic job between runs);
+		// only senders going quiet are alerts
+		if in.Level != stats.LevelFarAbove {
 			continue
 		}
 		e.mu.Lock()

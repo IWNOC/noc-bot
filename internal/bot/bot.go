@@ -52,6 +52,7 @@ type Bot struct {
 	teams    map[string]config.Team
 	senders  []config.Sender // added from Slack; checked before the config file's
 	props    map[string]*proposal
+	llmSlots chan struct{}
 	Now      func() time.Time
 }
 
@@ -65,7 +66,7 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
 		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, Now: time.Now,
-		teams: map[string]config.Team{}, props: map[string]*proposal{}}
+		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2)}
 	for k, v := range cfg.Teams {
 		b.teams[k] = v
 	}
@@ -187,29 +188,57 @@ func (b *Bot) saveTemplates(ctx context.Context) {
 func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
 	sender := b.senderFor(s.From, s.Host)
 	team := sender.Team
-	page := s.Kind == rules.KindSilence || s.Level == stats.LevelStopped // a service going quiet pages
+	page := s.Kind == rules.KindSilence // a sender that always talks going quiet pages
 	sev := -1
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
 
-	title, body, note, composed := b.compose(ctx, in)
+	// The alert must go out even when the LLM or laya is slow: each gets its own budget, they run
+	// side by side, and the post itself has a fresh deadline. (Sharing one deadline lost 30 alerts.)
+	var (
+		title, body, note string
+		composed          bool
+		dec               laya.Decision
+		decErr            = fmt.Errorf("laya not asked")
+		wg                sync.WaitGroup
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if !b.acquireLLM(ctx, 20*time.Second) {
+			return // the LLM is busy with other alerts: post the plain facts instead
+		}
+		defer b.releaseLLM()
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		title, body, note, composed = b.compose(cctx, in)
+	}()
+	var stateText string
 	if b.Laya != nil {
-		text := b.incidentState(in, sender, note)
-		known := map[string]any{}
-		b.Known.Put(text, known, "")
-		if d, err := b.Laya.Decide(ctx, "incident", text); err != nil {
-			b.Log.Warn("laya incident desk", "err", err)
+		stateText = b.incidentState(in, sender, "")
+		b.Known.Put(stateText, map[string]any{}, "")
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			defer cancel()
+			dec, decErr = b.Laya.Decide(lctx, "incident", stateText)
+		}()
+	}
+	wg.Wait()
+	_ = note
+	if b.Laya != nil {
+		if decErr != nil {
+			b.Log.Warn("laya incident desk", "incident", in.ID, "err", decErr)
 		} else {
-			b.record(ctx, "incident", in.ID, text, d)
-			if a, ok := d.Answers["area"]; ok && team == "" && trusted(a) {
+			b.record(context.Background(), "incident", in.ID, stateText, dec)
+			if a, ok := dec.Answers["area"]; ok && team == "" && trusted(a) {
 				team = b.teamForArea(a.String()) // "" until people say who owns that area
 			}
-			if a, ok := d.Answers["severity"]; ok && trusted(a) {
+			if a, ok := dec.Answers["severity"]; ok && trusted(a) {
 				if v, ok := a.Int(); ok {
 					sev = v
 				}
 			}
-			if a, ok := d.Answers["page_now"]; ok && trusted(a) {
+			if a, ok := dec.Answers["page_now"]; ok && trusted(a) {
 				if v, ok := a.Bool(); ok && v {
 					page = true
 				}
@@ -222,8 +251,27 @@ func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
 			i.Title, i.Body = title, body
 		}
 	})
-	b.post(ctx, incident.Event{Kind: incident.EvOpened, Incident: in})
+	pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b.post(pctx, incident.Event{Kind: incident.EvOpened, Incident: in})
 }
+
+// LLM slots: at most two alerts are written at once, so a burst of alerts does not pile up on the
+// local LLM until every one times out.
+func (b *Bot) acquireLLM(ctx context.Context, wait time.Duration) bool {
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case b.llmSlots <- struct{}{}:
+		return true
+	case <-t.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (b *Bot) releaseLLM() { <-b.llmSlots }
 
 // trusted: an answer we act on. While desks run in shadow mode the served answer is the teacher's
 // (rules or the LLM with evidence); a vega answer is used only when laya routes it to auto.
@@ -248,8 +296,18 @@ func (b *Bot) post(ctx context.Context, ev incident.Event) {
 		ts, err = b.Notify.Post(ctx, text, ev.Incident.Thread)
 	}
 	if err != nil {
-		b.Log.Error("slack post", "incident", ev.Incident.ID, "err", err)
-		return
+		b.Log.Warn("slack post failed, retrying", "incident", ev.Incident.ID, "err", err)
+		rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if ip, ok := b.Notify.(IncidentPoster); ok && ev.Kind == incident.EvOpened {
+			ts, err = ip.PostIncident(rctx, ev.Incident.ID, text, ev.Incident.Thread)
+		} else {
+			ts, err = b.Notify.Post(rctx, text, ev.Incident.Thread)
+		}
+		if err != nil {
+			b.Log.Error("slack post", "incident", ev.Incident.ID, "err", err)
+			return
+		}
 	}
 	if ts != "" && ev.Incident.Thread == "" {
 		b.Incidents.Update(ev.Incident.Key, func(i *incident.Incident) { i.Thread = ts })
@@ -382,6 +440,13 @@ func (b *Bot) window(ctx context.Context, now time.Time) {
 		return
 	}
 	where := d.Answers["where"].String()
+	// The window desk is the catch-all for what the rules missed: if alerts are already open from
+	// the last half hour, people are looking and this would only repeat them.
+	for _, o := range b.Incidents.Open() {
+		if o.Kind != "window" && now.Sub(o.LastSeen) < 30*time.Minute {
+			return
+		}
+	}
 	sig := rules.Signal{Kind: "window", Key: "window:" + where, Host: where, At: now, Facts: map[string]string{"area": where}}
 	if in, opened := b.Incidents.Signal(sig); opened {
 		go b.open(context.Background(), in, sig)

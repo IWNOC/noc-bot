@@ -98,7 +98,7 @@ func TestSilenceFromBaselineWithoutConfig(t *testing.T) {
 		now = now.Add(time.Minute)
 		tr.Tick(now)
 	}
-	for i := 0; i < 61; i++ {
+	for i := 0; i < 16; i++ {
 		now = now.Add(time.Minute)
 		tr.Tick(now)
 	}
