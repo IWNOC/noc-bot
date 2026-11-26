@@ -139,6 +139,9 @@ func renderComposed(ev incident.Event, title, body, mention string) string {
 		meta = append(meta, fmt.Sprintf("重要度：%d/3", in.Severity))
 	}
 	meta = append(meta, "送信元："+in.Host, "ID："+in.ID)
+	if in.Why != "" {
+		meta = append(meta, "すぐ知らせた理由："+in.Why)
+	}
 	sb.WriteString("_" + strings.Join(meta, "　") + "_")
 	return sb.String()
 }

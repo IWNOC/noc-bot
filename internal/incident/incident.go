@@ -39,9 +39,14 @@ type Incident struct {
 	Severity   int  // 0..3, -1 unknown
 	Page       bool // mention the team
 	Summary    string
-	Annotation string // the investigator's (LLM) note, shown separately from facts
-	Title      string // LLM-written headline (checked against the evidence)
-	Body       string // LLM-written note (checked against the evidence)
+	Annotation string    // the investigator's (LLM) note, shown separately from facts
+	Tier       string    // now | digest | silent: how people hear about it
+	Why        string    // why it was posted at once (shown to people)
+	Digested   time.Time // last digest it appeared in
+	Attended   bool      // a person reacted (button, emoji, reply)
+	Judged     bool      // attention already counted
+	Title      string    // LLM-written headline (checked against the evidence)
+	Body       string    // LLM-written note (checked against the evidence)
 }
 
 // EventKind says what changed.
@@ -186,4 +191,15 @@ func (m *Manager) ByThread(ts string) (Incident, bool) {
 		}
 	}
 	return Incident{}, false
+}
+
+// All lists every incident (open and resolved) still in memory.
+func (m *Manager) All() []Incident {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Incident, 0, len(m.byKey))
+	for _, in := range m.byKey {
+		out = append(out, *in)
+	}
+	return out
 }

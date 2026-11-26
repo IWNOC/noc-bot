@@ -80,6 +80,7 @@ func (b *Bot) converse(ctx context.Context, channel, thread, text, user string) 
 	var inc *incident.Incident
 	if in, ok := b.Incidents.ByThread(thread); ok {
 		inc = &in
+		b.attended(ctx, in)
 	}
 	b.Store.Note(ctx, b.Now(), "comment", thread, text, user)
 	if b.Laya != nil && inc != nil {

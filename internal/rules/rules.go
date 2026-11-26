@@ -174,6 +174,11 @@ func (e *Engine) Evaluate(now time.Time) []Signal {
 		if in.Level != stats.LevelFarAbove {
 			continue
 		}
+		// a burst within a few minutes is a job running (logrotate, a reload), not a problem: an
+		// operator ignores it. Only a rise that keeps going over several minutes is an alert.
+		if in.ActiveMin < 5 {
+			continue
+		}
 		e.mu.Lock()
 		m := e.tpl[in.Key.ID]
 		k := e.coveringLocked(m, now)
@@ -186,7 +191,7 @@ func (e *Engine) Evaluate(now time.Time) []Signal {
 		}
 		out = append(out, Signal{Kind: KindRate, Key: "rate:" + in.Key.ID, Host: m.Host, From: m.From, Template: m.Text, TplID: m.ID,
 			Level: in.Level, At: now, Facts: map[string]string{
-				"last_hour": fmt.Sprint(in.LastHour), "normal_per_hour": fmt.Sprintf("%.1f", in.Baseline),
+				"last_hour": fmt.Sprint(in.LastHour), "normal_per_hour": fmt.Sprintf("%.1f", in.Baseline), "active_minutes": fmt.Sprint(in.ActiveMin),
 				"first_seen": in.FirstSeen.UTC().Format(time.RFC3339), "example": m.Example}})
 	}
 	// any sender that normally talks a lot and went quiet: no list needed, the baseline says it

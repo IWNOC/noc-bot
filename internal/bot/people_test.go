@@ -123,8 +123,8 @@ func setupScript(t *testing.T, sc script) (*Bot, *fakeSlack, *[]feedbackCall, in
 
 func TestWrongButtonTeachesBothDesks(t *testing.T) {
 	b, _, calls, in := setup(t, "{}")
-	reply := b.OnAnswer(context.Background(), in.ID, slackapp.ActWrong, "", "U1")
-	if !strings.Contains(reply, "学習に登録") {
+	reply, undo := b.OnAnswer(context.Background(), in.ID, slackapp.ActWrong, "", "U1")
+	if !strings.Contains(reply, "誤検知として学習") || undo == "" {
 		t.Fatalf("reply %q", reply)
 	}
 	if len(*calls) != 2 {

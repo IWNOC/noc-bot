@@ -130,60 +130,70 @@ func (b *Bot) loadLearned(ctx context.Context) {
 
 // ---------------------------------------------------------------- buttons and emoji
 
-// OnAnswer handles the answer buttons on an alert.
-func (b *Bot) OnAnswer(ctx context.Context, incidentID, action, value, user string) string {
+// OnAnswer handles the buttons and menus on alerts and digests. Tier buttons change how this kind
+// of alert reaches people (visible at once, undoable); the verdict and the menus are labels for laya.
+func (b *Bot) OnAnswer(ctx context.Context, incidentID, action, value, user string) (string, string) {
 	in, ok := b.Incidents.ByID(incidentID)
 	if !ok {
-		return "この障害はもう記録にありません（noc-bot の再起動前のものかもしれません）。"
+		return "この件はもう記録にありません（noc-bot の再起動前のものかもしれません）。", ""
 	}
-	lineAns, incAns := map[string]any{}, map[string]any{}
-	correction := true
-	what := ""
+	b.attended(ctx, in)
+	tierReply := func(tier, msg string) (string, string) {
+		b.setTierFromPerson(ctx, in, tier, user)
+		return fmt.Sprintf("<@%s>：%s を%s", user, tierLabel(in), msg), tierKey(in)
+	}
 	switch action {
-	case slackapp.ActRight:
-		correction, what = false, "合っている"
-		lineAns["odd"] = true
-		if a := b.areaOfTeam(in.Team); a != "" {
-			incAns["area"] = a
-		}
-		if in.Severity >= 0 {
-			incAns["severity"] = in.Severity
-		}
+	case slackapp.ActNow, slackapp.ActRight, slackapp.ActPromote:
+		// "worth telling at once": a strong positive for laya too
+		b.teach(ctx, in, map[string]any{"odd": true}, nil, false, user)
+		return tierReply(TierNow, "、これからはすぐ知らせます。")
+	case slackapp.ActDigest:
+		return tierReply(TierDigest, "、これからは30分ごとのまとめに載せます。")
+	case slackapp.ActMute, slackapp.ActMuteSel:
+		return tierReply(TierSilent, "、これからは通知しません（記録と件数は残します）。")
 	case slackapp.ActWrong:
-		what = "誤検知"
-		lineAns["odd"] = false
-		incAns["page_now"] = false
-		incAns["severity"] = 0
-	case slackapp.ActSevUp, slackapp.ActSevDown:
+		n := b.teach(ctx, in, map[string]any{"odd": false}, map[string]any{"page_now": false, "severity": 0}, true, user)
+		b.setTierFromPerson(ctx, in, TierSilent, user)
+		msg := fmt.Sprintf("<@%s>：誤検知として学習に登録し、%s は今後通知しません。", user, tierLabel(in))
+		if n == 0 {
+			msg = fmt.Sprintf("<@%s>：%s は今後通知しません（laya の判断記録がないため学習には使っていません）。", user, tierLabel(in))
+		}
+		return msg, tierKey(in)
+	case slackapp.ActSeverity, slackapp.ActSevUp, slackapp.ActSevDown:
 		sev := in.Severity
-		if sev < 0 {
-			sev = 1
+		switch action {
+		case slackapp.ActSeverity:
+			fmt.Sscan(value, &sev)
+		case slackapp.ActSevUp:
+			if sev < 3 {
+				sev++
+			}
+		case slackapp.ActSevDown:
+			if sev > 0 {
+				sev--
+			}
 		}
-		if action == slackapp.ActSevUp && sev < 3 {
-			sev++
-		} else if action == slackapp.ActSevDown && sev > 0 {
-			sev--
-		}
-		what = fmt.Sprintf("重要度 %d/3", sev)
-		incAns["severity"] = sev
-		if action == slackapp.ActSevUp {
-			lineAns["odd"] = true
+		if sev < 0 || sev > 3 {
+			return "", ""
 		}
 		b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Severity = sev })
+		b.teach(ctx, in, nil, map[string]any{"severity": sev}, true, user)
+		return fmt.Sprintf("📝 <@%s>：影響の大きさ %d/3 を学習に登録しました。", user, sev), ""
 	case slackapp.ActTeam:
-		what = "担当は " + value
+		b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Team = value })
+		lineAns, incAns := map[string]any{}, map[string]any{}
 		if a := b.areaOfTeam(value); a != "" {
 			lineAns["area"], incAns["area"] = a, a
 		}
-		b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Team = value })
-	default:
-		return ""
+		b.teach(ctx, in, lineAns, incAns, true, user)
+		return fmt.Sprintf("📝 <@%s>：担当は %s として登録しました。", user, value), ""
 	}
-	n := b.teach(ctx, in, lineAns, incAns, correction, user)
-	if n == 0 {
-		return fmt.Sprintf("📝 <@%s> の判定（%s）を記録しました。laya がこの件を判断した記録がないため、学習には使っていません。", user, what)
-	}
-	return fmt.Sprintf("📝 <@%s> の判定（%s）を学習に登録しました。", user, what)
+	return "", ""
+}
+
+// OnUndo reverts a tier change.
+func (b *Bot) OnUndo(ctx context.Context, key, user string) string {
+	return b.undoTier(ctx, key, user)
 }
 
 // teach sends human answers to the desks that decided this incident. It returns how many desks learned.
@@ -208,7 +218,7 @@ func (b *Bot) teach(ctx context.Context, in incident.Incident, lineAns, incAns m
 		n++
 	}
 	try("incident", in.ID, incAns)
-	if in.Kind == "odd" {
+	if in.TplID != "" { // rate alerts too: a false alarm on a pattern must teach the line desk
 		try("line", in.TplID, lineAns)
 	}
 	return n
@@ -223,13 +233,13 @@ func (b *Bot) OnReaction(ctx context.Context, messageTS, emoji, user string) {
 	action := ""
 	switch emoji {
 	case "white_check_mark", "heavy_check_mark", "ok", "+1":
-		action = slackapp.ActRight
+		action = slackapp.ActNow
 	case "x", "negative_squared_cross_mark", "-1":
 		action = slackapp.ActWrong
 	default:
 		return
 	}
-	if reply := b.OnAnswer(ctx, in.ID, action, "", user); reply != "" {
+	if reply, _ := b.OnAnswer(ctx, in.ID, action, "", user); reply != "" {
 		b.Notify.Post(ctx, reply, in.Thread)
 	}
 }

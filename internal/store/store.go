@@ -140,9 +140,10 @@ func (s *Store) Get(ctx context.Context, k string) ([]byte, error) {
 	return v, err
 }
 
-// Subjects lists the subjects a desk has already decided (e.g. template ids for the line desk).
-func (s *Store) Subjects(ctx context.Context, desk string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT subject FROM decisions WHERE desk=?`, desk)
+// Subjects lists the subjects a desk has already decided with a given wording version (e.g.
+// template ids for the line desk). A new wording means everything is judged once more.
+func (s *Store) Subjects(ctx context.Context, desk, version string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT subject FROM decisions WHERE desk=? AND version=?`, desk, version)
 	if err != nil {
 		return nil, err
 	}
@@ -260,4 +261,17 @@ func (s *Store) NotesWithID(ctx context.Context, kind string, limit int) ([]Note
 type NoteRow struct {
 	ID                     int64
 	At, Subject, Text, Who string
+}
+
+// LastAnswers returns the answers a desk last gave about a subject, per question (raw JSON).
+func (s *Store) LastAnswers(ctx context.Context, desk, subject string) (map[string]json.RawMessage, bool) {
+	var raw string
+	if err := s.db.QueryRowContext(ctx, `SELECT answers FROM decisions WHERE desk=? AND subject=? ORDER BY id DESC LIMIT 1`, desk, subject).Scan(&raw); err != nil {
+		return nil, false
+	}
+	m := map[string]json.RawMessage{}
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return nil, false
+	}
+	return m, true
 }

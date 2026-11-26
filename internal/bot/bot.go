@@ -53,6 +53,11 @@ type Bot struct {
 	senders  []config.Sender // added from Slack; checked before the config file's
 	props    map[string]*proposal
 	llmSlots chan struct{}
+	tierMu   sync.Mutex
+	nowPosts []time.Time
+	stormQ   []incident.Incident
+	configAt map[string]time.Time
+	lastDig  time.Time
 	Now      func() time.Time
 }
 
@@ -66,12 +71,12 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
 		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, Now: time.Now,
-		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2)}
+		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2), configAt: map[string]time.Time{}}
 	for k, v := range cfg.Teams {
 		b.teams[k] = v
 	}
 	b.loadLearned(context.Background())
-	if done, err := st.Subjects(context.Background(), "line"); err == nil {
+	if done, err := st.Subjects(context.Background(), "line", statebuilder.Version); err == nil {
 		b.judged = done
 	}
 	if snap, err := st.Get(context.Background(), "drain"); err == nil && snap != nil {
@@ -96,6 +101,7 @@ func (b *Bot) Handle(l ingest.Line) {
 	}
 	b.examples[m.ID] = ex
 	b.mu.Unlock()
+	b.noteConfigChange(l.Host, l.Msg, l.Recv)
 	meta := rules.TemplateMeta{ID: m.ID, Text: m.Template, Program: l.Program, Host: l.Host, From: l.From, Example: l.Msg}
 	sig := b.Rules.Observe(meta, m.New, l.Recv, l.Skew())
 	if b.Laya == nil {
@@ -171,9 +177,20 @@ func (b *Bot) minute(ctx context.Context, now time.Time) {
 		}
 	}
 	for _, ev := range b.Incidents.Tick(now) {
-		b.post(ctx, ev)
+		if ev.Incident.Tier == TierNow { // reminders and "resolved" only for what was posted on its own
+			b.post(ctx, ev)
+		}
 	}
-	b.checkOutcomes(ctx, now)
+	b.flushStorm(ctx)
+	b.judgeAttention(ctx, now)
+	if now.Sub(b.lastDig) >= digestInterval {
+		if !b.lastDig.IsZero() {
+			b.digest(ctx, now)
+		}
+		b.lastDig = now
+	}
+	// outcome labels are paused: "another incident on the same host" was true on every noisy host,
+	// so it taught laya that noise is odd. Restart only with person-confirmed incidents.
 }
 
 func (b *Bot) saveTemplates(ctx context.Context) {
@@ -188,69 +205,61 @@ func (b *Bot) saveTemplates(ctx context.Context) {
 func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
 	sender := b.senderFor(s.From, s.Host)
 	team := sender.Team
-	page := s.Kind == rules.KindSilence // a sender that always talks going quiet pages
-	sev := -1
+	tier, why, page := b.decideTier(ctx, in, s)
 
-	// The alert must go out even when the LLM or laya is slow: each gets its own budget, they run
-	// side by side, and the post itself has a fresh deadline. (Sharing one deadline lost 30 alerts.)
-	var (
-		title, body, note string
-		composed          bool
-		dec               laya.Decision
-		decErr            = fmt.Errorf("laya not asked")
-		wg                sync.WaitGroup
-	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if !b.acquireLLM(ctx, 20*time.Second) {
-			return // the LLM is busy with other alerts: post the plain facts instead
-		}
-		defer b.releaseLLM()
-		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		title, body, note, composed = b.compose(cctx, in)
-	}()
-	var stateText string
+	// laya's incident desk still answers (it is learning severity, area and cause), but its
+	// answers only fill in the team and the severity shown; they never decide who is paged.
 	if b.Laya != nil {
-		stateText = b.incidentState(in, sender, "")
+		stateText := b.incidentState(in, sender, "")
 		b.Known.Put(stateText, map[string]any{}, "")
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			lctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			lctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
-			dec, decErr = b.Laya.Decide(lctx, "incident", stateText)
+			dec, err := b.Laya.Decide(lctx, "incident", stateText)
+			if err != nil {
+				b.Log.Warn("laya incident desk", "incident", in.ID, "err", err)
+				return
+			}
+			b.record(context.Background(), "incident", in.ID, stateText, dec)
+			b.Incidents.Update(in.Key, func(i *incident.Incident) {
+				if a, ok := dec.Answers["severity"]; ok && trusted(a) {
+					if v, ok := a.Int(); ok {
+						i.Severity = v
+					}
+				}
+				if a, ok := dec.Answers["area"]; ok && i.Team == "" && trusted(a) {
+					i.Team = b.teamForArea(a.String())
+				}
+			})
 		}()
 	}
-	wg.Wait()
-	_ = note
-	if b.Laya != nil {
-		if decErr != nil {
-			b.Log.Warn("laya incident desk", "incident", in.ID, "err", decErr)
-		} else {
-			b.record(context.Background(), "incident", in.ID, stateText, dec)
-			if a, ok := dec.Answers["area"]; ok && team == "" && trusted(a) {
-				team = b.teamForArea(a.String()) // "" until people say who owns that area
-			}
-			if a, ok := dec.Answers["severity"]; ok && trusted(a) {
-				if v, ok := a.Int(); ok {
-					sev = v
-				}
-			}
-			if a, ok := dec.Answers["page_now"]; ok && trusted(a) {
-				if v, ok := a.Bool(); ok && v {
-					page = true
-				}
-			}
+	in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) {
+		i.Tier, i.Why, i.Page, i.Team, i.Severity = tier, why, page, team, -1
+	})
+	if tier != TierNow {
+		b.Store.Incident(context.Background(), in.ID, in.Key, in.Opened, in) // digest / silent: kept, not posted now
+		return
+	}
+	if b.stormy(b.Now()) {
+		b.tierMu.Lock()
+		b.stormQ = append(b.stormQ, in)
+		b.tierMu.Unlock()
+		return
+	}
+	if prev := b.previousThread(in); prev != "" {
+		// the same kind came back within hours: add to the old thread instead of a new post
+		in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Thread = prev; i.Why = "再発（前回のスレッドに追記）" })
+	}
+	if b.acquireLLM(ctx, 20*time.Second) {
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		title, body, _, ok := b.compose(cctx, in)
+		cancel()
+		b.releaseLLM()
+		if ok {
+			in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Title, i.Body = title, body })
 		}
 	}
-	in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) {
-		i.Team, i.Severity, i.Page, i.Notified = team, sev, page, b.Now()
-		if composed {
-			i.Title, i.Body = title, body
-		}
-	})
+	in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Notified = b.Now() })
 	pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	b.post(pctx, incident.Event{Kind: incident.EvOpened, Incident: in})
@@ -389,7 +398,7 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 	}
 	// laya (or its teacher) thinks this pattern is strange: open an incident and check later
 	// whether something actually happened on that host.
-	b.Store.ExpectOutcome(ctx, id, now.Add(30*time.Minute), "line", meta.Host, text, true)
+	_ = id
 	sig := rules.Signal{Kind: "odd", Key: "odd:" + s.TplID, Host: meta.Host, From: meta.From, Template: meta.Text, TplID: s.TplID,
 		Level: info.Level, At: now, Facts: map[string]string{"example": meta.Example, "frequency": string(info.Level)}}
 	if in, opened := b.Incidents.Signal(sig); opened {
@@ -435,22 +444,8 @@ func (b *Bot) window(ctx context.Context, now time.Time) {
 		return
 	}
 	b.record(ctx, "window", now.UTC().Format("2006-01-02T15:04"), text, d)
-	a, ok := d.Answers["anything_odd"]
-	if v, okb := a.Bool(); !ok || !okb || !v || !trusted(a) {
-		return
-	}
-	where := d.Answers["where"].String()
-	// The window desk is the catch-all for what the rules missed: if alerts are already open from
-	// the last half hour, people are looking and this would only repeat them.
-	for _, o := range b.Incidents.Open() {
-		if o.Kind != "window" && now.Sub(o.LastSeen) < 30*time.Minute {
-			return
-		}
-	}
-	sig := rules.Signal{Kind: "window", Key: "window:" + where, Host: where, At: now, Facts: map[string]string{"area": where}}
-	if in, opened := b.Incidents.Signal(sig); opened {
-		go b.open(context.Background(), in, sig)
-	}
+	// The window desk's verdicts are kept as data but no longer open alerts: it called 92% of
+	// windows odd. The 30-minute digest covers "how does the whole look".
 }
 
 // checkOutcomes turns what actually happened into labels. Only the positive case is taught: an odd

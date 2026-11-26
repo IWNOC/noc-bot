@@ -160,6 +160,9 @@ func Render(ev incident.Event, mention string) string {
 		}
 		fmt.Fprintf(&b, "• %s：%s\n", k, v)
 	}
+	if in.Why != "" {
+		fmt.Fprintf(&b, "_すぐ知らせた理由：%s_\n", in.Why)
+	}
 	if in.Team != "" {
 		fmt.Fprintf(&b, "担当：%s", in.Team)
 		if in.Severity >= 0 {

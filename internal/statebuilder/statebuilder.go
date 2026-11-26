@@ -16,7 +16,7 @@ import (
 )
 
 // Version of the wording. Stored with every decision so evaluations compare like with like.
-const Version = "line-v2" // v2: operator notes
+const Version = "line-v3" // v3: no "happening at the same time" (it leaked noisy hosts' context)
 
 var jst = time.FixedZone("JST", 9*3600)
 
@@ -50,11 +50,6 @@ func LineState(l Line) string {
 		fmt.Fprintf(&b, "Known issue: yes. %s (accepted, will not be fixed during the event).\n", l.Known.Reason)
 	} else {
 		b.WriteString("Known issue: none.\n")
-	}
-	if len(l.Related) > 0 {
-		fmt.Fprintf(&b, "Happening at the same time: %s.\n", strings.Join(l.Related, "; "))
-	} else {
-		b.WriteString("Happening at the same time: nothing else unusual.\n")
 	}
 	for _, n := range l.Notes {
 		fmt.Fprintf(&b, "Operators told us: %s\n", n)

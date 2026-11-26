@@ -16,8 +16,11 @@ import (
 
 // Handler is what noc-bot does with people's input. Each call runs in its own goroutine.
 type Handler interface {
-	// OnAnswer: a button on an alert. value is the option for selects ("l2l3"), empty otherwise.
-	OnAnswer(ctx context.Context, incidentID, action, value, user string) string
+	// OnAnswer: a button or menu on an alert or digest. value is the option for selects. It returns
+	// the reply to post and, when the change can be undone, a key for an undo button.
+	OnAnswer(ctx context.Context, incidentID, action, value, user string) (reply, undoKey string)
+	// OnUndo: the undo button under a reply.
+	OnUndo(ctx context.Context, key, user string) string
 	// OnReaction: an emoji added to one of noc-bot's messages.
 	OnReaction(ctx context.Context, messageTS, emoji, user string)
 	// OnThreadReply: a person wrote in a thread (noc-bot decides whether it is part of it).
@@ -30,13 +33,21 @@ type Handler interface {
 
 // Action ids on alert and proposal messages.
 const (
+	ActNow      = "nb_now"      // 🔴 すぐ知らせて正解
+	ActDigest   = "nb_digest"   // 🟡 まとめでいい
+	ActMute     = "nb_mute"     // 🔕 通知不要
+	ActWrong    = "nb_wrong"    // ❌ 誤検知
+	ActSeverity = "nb_severity" // menu: impact 0-3
+	ActTeam     = "nb_team"     // menu: owning team
+	ActPromote  = "nb_promote"  // digest menu: すぐ知らせて
+	ActMuteSel  = "nb_mute_sel" // digest menu: 通知不要
+	ActUndoTier = "nb_undo"
+	ActAccept   = "nb_accept"
+	ActReject   = "nb_reject"
+	// kept so buttons on older messages still work
 	ActRight   = "nb_right"
-	ActWrong   = "nb_wrong"
 	ActSevUp   = "nb_sev_up"
 	ActSevDown = "nb_sev_down"
-	ActTeam    = "nb_team"
-	ActAccept  = "nb_accept"
-	ActReject  = "nb_reject"
 )
 
 // App is the Slack app.
@@ -106,22 +117,58 @@ func (a *App) answerButtons(incidentID string) *slack.ActionBlock {
 		return b
 	}
 	elems := []slack.BlockElement{
-		btn(ActRight, "✅ 合っている", slack.StylePrimary),
+		btn(ActNow, "🔴 すぐ知らせて正解", slack.StylePrimary),
+		btn(ActDigest, "🟡 まとめでいい", ""),
+		btn(ActMute, "🔕 通知不要", ""),
 		btn(ActWrong, "❌ 誤検知", slack.StyleDanger),
-		btn(ActSevUp, "🔼 もっと重要", ""),
-		btn(ActSevDown, "🔽 そこまでではない", ""),
 	}
+	var sev []*slack.OptionBlockObject
+	for i, l := range []string{"0 影響なし", "1 一部の人", "2 多くの人", "3 全体・中核"} {
+		sev = append(sev, slack.NewOptionBlockObject(fmt.Sprintf("%s|%d", incidentID, i), slack.NewTextBlockObject(slack.PlainTextType, l, false, false), nil))
+	}
+	elems = append(elems, slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "影響の大きさ", false, false), ActSeverity, sev...))
 	if a.Teams != nil {
 		var opts []*slack.OptionBlockObject
 		for _, t := range a.Teams() {
 			opts = append(opts, slack.NewOptionBlockObject(incidentID+"|"+t, slack.NewTextBlockObject(slack.PlainTextType, t, false, false), nil))
 		}
 		if len(opts) > 0 {
-			sel := slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "担当違う", false, false), ActTeam, opts...)
-			elems = append(elems, sel)
+			elems = append(elems, slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "担当", false, false), ActTeam, opts...))
 		}
 	}
 	return slack.NewActionBlock("nb_answers_"+incidentID, elems...)
+}
+
+// DigestItem is one line of the digest's menus.
+type DigestItem struct{ ID, Label string }
+
+// PostDigest posts the digest with "すぐ知らせて" and "通知不要" menus over its items.
+func (a *App) PostDigest(ctx context.Context, text string, items []DigestItem) (string, error) {
+	blocks := []slack.Block{slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, clip(text, 2900), false, false), nil, nil)}
+	if len(items) > 0 {
+		var up, mute []*slack.OptionBlockObject
+		for _, it := range items {
+			up = append(up, slack.NewOptionBlockObject(it.ID, slack.NewTextBlockObject(slack.PlainTextType, clip(it.Label, 74), false, false), nil))
+			mute = append(mute, slack.NewOptionBlockObject(it.ID, slack.NewTextBlockObject(slack.PlainTextType, clip(it.Label, 74), false, false), nil))
+		}
+		blocks = append(blocks, slack.NewActionBlock("nb_digest",
+			slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "🔴 この種類はすぐ知らせて", false, false), ActPromote, up...),
+			slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "🔕 この種類は通知不要", false, false), ActMuteSel, mute...)))
+	}
+	_, ts, err := a.API.PostMessageContext(ctx, a.Channel, slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionDisableLinkUnfurl())
+	a.posted(a.Channel, "", ts, err)
+	return ts, err
+}
+
+// postWithUndo posts a reply with an undo button.
+func (a *App) postWithUndo(ctx context.Context, channel, thread, text, key string) error {
+	blocks := []slack.Block{
+		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, clip(text, 2900), false, false), nil,
+			slack.NewAccessory(slack.NewButtonBlockElement(ActUndoTier, key, slack.NewTextBlockObject(slack.PlainTextType, "取り消す", false, false)))),
+	}
+	_, ts, err := a.API.PostMessageContext(ctx, channel, slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionTS(thread))
+	a.posted(channel, thread, ts, err)
+	return err
 }
 
 // PostProposal posts a "should I learn this?" card in a thread of the alert channel.
@@ -223,24 +270,35 @@ func (a *App) onInteraction(ctx context.Context, cb slack.InteractionCallback) {
 		return
 	}
 	for _, act := range cb.ActionCallback.BlockActions {
-		var reply string
+		var reply, undo string
 		switch act.ActionID {
-		case ActRight, ActWrong, ActSevUp, ActSevDown:
-			reply = a.h.OnAnswer(ctx, act.Value, act.ActionID, "", cb.User.ID)
-		case ActTeam:
-			inc, team, _ := strings.Cut(act.SelectedOption.Value, "|")
-			reply = a.h.OnAnswer(ctx, inc, act.ActionID, team, cb.User.ID)
+		case ActNow, ActDigest, ActMute, ActWrong, ActRight, ActSevUp, ActSevDown:
+			reply, undo = a.h.OnAnswer(ctx, act.Value, act.ActionID, "", cb.User.ID)
+		case ActTeam, ActSeverity:
+			inc, v, _ := strings.Cut(act.SelectedOption.Value, "|")
+			reply, undo = a.h.OnAnswer(ctx, inc, act.ActionID, v, cb.User.ID)
+		case ActPromote, ActMuteSel:
+			reply, undo = a.h.OnAnswer(ctx, act.SelectedOption.Value, act.ActionID, "", cb.User.ID)
+		case ActUndoTier:
+			reply = a.h.OnUndo(ctx, act.Value, cb.User.ID)
 		case ActAccept, ActReject:
 			reply = a.h.OnProposal(ctx, act.Value, act.ActionID == ActAccept, cb.User.ID)
 		}
-		if reply != "" {
-			thread := cb.Message.ThreadTimestamp
-			if thread == "" {
-				thread = cb.Message.Timestamp
-			}
-			if err := a.PostIn(ctx, cb.Channel.ID, thread, reply); err != nil {
-				a.Log.Warn("slack reply", "err", err)
-			}
+		if reply == "" {
+			continue
+		}
+		thread := cb.Message.ThreadTimestamp
+		if thread == "" {
+			thread = cb.Message.Timestamp
+		}
+		var err error
+		if undo != "" {
+			err = a.postWithUndo(ctx, cb.Channel.ID, thread, reply, undo)
+		} else {
+			err = a.PostIn(ctx, cb.Channel.ID, thread, reply)
+		}
+		if err != nil {
+			a.Log.Warn("slack reply", "err", err)
 		}
 	}
 }

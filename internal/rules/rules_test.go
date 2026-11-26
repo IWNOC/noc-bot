@@ -107,3 +107,34 @@ func TestSilenceFromBaselineWithoutConfig(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// logrotate-style bursts (many lines in one minute) are not rate alerts; a sustained rise is.
+func TestShortBurstIsNotAnAlert(t *testing.T) {
+	tr := stats.NewTracker()
+	e, _ := New(&config.Config{Clock: config.Clock{MaxSkew: 2 * time.Minute}}, tr)
+	now := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	burst, steady := stats.Key{Kind: "template", ID: "logrotate"}, stats.Key{Kind: "template", ID: "bgp"}
+	e.Observe(TemplateMeta{ID: "logrotate", Text: "Finished Rotate log files.", Host: "eps-rt-02"}, true, now, 0)
+	e.Observe(TemplateMeta{ID: "bgp", Text: "%BGP-3-NOTIFICATION <*>", Host: "eps-rt-01"}, true, now, 0)
+	tr.Observe(burst, now) // both seen once, long ago
+	tr.Observe(steady, now)
+	for i := 0; i < 180; i++ { // three quiet hours to learn "normally almost never"
+		now = now.Add(time.Minute)
+		tr.Tick(now)
+	}
+	for j := 0; j < 30; j++ {
+		tr.Observe(burst, now) // 30 lines in one minute
+	}
+	for i := 0; i < 20; i++ { // 20 minutes of steady trouble
+		tr.Observe(steady, now)
+		now = now.Add(time.Minute)
+		tr.Tick(now)
+	}
+	got := map[string]bool{}
+	for _, s := range e.Evaluate(now) {
+		got[s.TplID] = true
+	}
+	if got["logrotate"] || !got["bgp"] {
+		t.Fatalf("got %v", got)
+	}
+}

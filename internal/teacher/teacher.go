@@ -203,10 +203,21 @@ func (t *Teacher) Answer(ctx context.Context, req Request) (map[string]any, map[
 		answers[q] = v
 		evidence[q] = ev[q]
 	}
+	// A line the teacher itself calls routine (noise/info) is not odd, whatever it said about odd:
+	// keep its labels consistent so laya does not learn to over-alert from the teacher.
+	if k, ok := answers["kind"].(string); ok && (k == "noise" || k == "info") {
+		if _, asked := req.Questions["odd"]; asked {
+			answers["odd"] = false
+			evidence["odd"] = "kind=" + k + " (routine, so not odd)"
+		}
+	}
 	return answers, evidence
 }
 
 const system = `You label records for a network operations centre (NOC) running a three-day event network.
+Base rate: in a healthy network well over 90% of new log patterns need no action at all (routine jobs,
+sessions opening and closing, reloads, keepalives). Say "odd" only when an experienced operator would
+actually go and look: errors, failures, refusals, things going down, or a sustained change that matters.
 Answer each question about the record. Use the tools to check facts when they help.
 For every answer you give, quote the evidence: the few words in the record or the tool result that decide it
 (at most 150 characters; quote, do not explain).

@@ -36,6 +36,7 @@ type Series struct {
 	baseHours float64          // hours of history behind the baseline
 	baseHist  [minutes]float64 // baseline as it was at each of the last 60 minutes
 	active    float64          // share of minutes with at least one event (smoothed): how steady it talks
+	folded    float64          // events folded into the baseline so far
 }
 
 func (s *Series) roll(now time.Time) {
@@ -78,6 +79,18 @@ func (s *Series) LastMinutes(k int) uint64 {
 	return n
 }
 
+// ActiveMinutes is how many of the last 60 minutes had at least one event. A periodic job
+// (logrotate, a cron task) bursts in one or two minutes; a real problem keeps going.
+func (s *Series) ActiveMinutes() int {
+	n := 0
+	for _, b := range s.buckets {
+		if b > 0 {
+			n++
+		}
+	}
+	return n
+}
+
 // Baseline is the smoothed normal hourly rate and how many hours it is built on.
 func (s *Series) Baseline() (perHour float64, hours float64) { return s.baseline, s.baseHours }
 
@@ -85,13 +98,16 @@ func (s *Series) Baseline() (perHour float64, hours float64) { return s.baseline
 func (s *Series) updateBaseline() {
 	const halfLifeMin = 6 * 60
 	alpha := 1 - math.Pow(0.5, 1.0/halfLifeMin)
-	rate := float64(s.buckets[(s.cur-1+minutes)%minutes]) * 60 // last full minute, as per hour
-	if s.baseHours == 0 {
-		s.baseline = rate
-	} else {
-		s.baseline += alpha * (rate - s.baseline)
-	}
+	n := float64(s.buckets[(s.cur-1+minutes)%minutes]) // last full minute
+	s.folded += n
 	s.baseHours += 1.0 / 60
+	if s.baseHours < 6 {
+		// the first hours: the plain average so far. Seeding from the first minute made one early
+		// line look like "60 per hour" for half a day, hiding real rises.
+		s.baseline = s.folded / s.baseHours
+	} else {
+		s.baseline += alpha * (n*60 - s.baseline)
+	}
 	s.baseHist[s.cur%minutes] = s.baseline
 	const activeHalfLifeMin = 120
 	beta := 1 - math.Pow(0.5, 1.0/activeHalfLifeMin)
@@ -157,6 +173,7 @@ type Info struct {
 	Level     Level
 	LastHour  uint64
 	Last5Min  uint64
+	ActiveMin int // minutes of the last hour with events
 	Baseline  float64
 	FirstSeen time.Time
 	LastSeen  time.Time
@@ -216,7 +233,7 @@ func (t *Tracker) Get(k Key, now time.Time) (Info, bool) {
 
 func info(k Key, s *Series, now time.Time) Info {
 	b := s.priorBaseline()
-	return Info{Key: k, Level: s.Level(now), LastHour: s.LastHour(), Last5Min: s.LastMinutes(5),
+	return Info{Key: k, Level: s.Level(now), LastHour: s.LastHour(), Last5Min: s.LastMinutes(5), ActiveMin: s.ActiveMinutes(),
 		Baseline: b, FirstSeen: s.FirstSeen, LastSeen: s.LastSeen, Total: s.Total}
 }
 
