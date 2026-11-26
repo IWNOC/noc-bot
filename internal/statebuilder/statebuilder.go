@@ -16,7 +16,7 @@ import (
 )
 
 // Version of the wording. Stored with every decision so evaluations compare like with like.
-const Version = "line-v3" // v3: no "happening at the same time" (it leaked noisy hosts' context)
+const Version = "line-v4" // v4: background knowledge (meaning, outside parties); v3 dropped "happening at the same time"
 
 var jst = time.FixedZone("JST", 9*3600)
 
@@ -31,6 +31,8 @@ type Line struct {
 	Known    *config.KnownIssue
 	Related  []string // other things going on at the same time, already in words
 	Notes    []string // what operators told noc-bot about this sender (its memory)
+	Meaning  string   // what this kind of message means (looked up; may be wrong)
+	Entities []string // who the outside parties in it are
 	Now      time.Time
 }
 
@@ -53,6 +55,12 @@ func LineState(l Line) string {
 	}
 	for _, n := range l.Notes {
 		fmt.Fprintf(&b, "Operators told us: %s\n", n)
+	}
+	if l.Meaning != "" {
+		fmt.Fprintf(&b, "What this message means (looked up, may be wrong): %s\n", l.Meaning)
+	}
+	for _, e := range l.Entities {
+		fmt.Fprintf(&b, "Outside party: %s\n", e)
 	}
 	fmt.Fprintf(&b, "Time of day: %s.\n", timeOfDay(l.Now))
 	return b.String()

@@ -60,6 +60,7 @@ type Bot struct {
 	stormQ   []incident.Incident
 	configAt map[string]time.Time
 	lastDig  time.Time
+	inv      invState
 	Now      func() time.Time
 }
 
@@ -165,6 +166,9 @@ func (b *Bot) Run(ctx context.Context, lines <-chan ingest.Line) {
 			}
 			if n%10 == 0 {
 				b.saveTemplates(ctx)
+			}
+			if n == 3 || n%int(patrolEvery/time.Minute) == 0 { // first patrol soon after start
+				go b.patrol(ctx, b.Now())
 			}
 		}
 	}
@@ -367,7 +371,9 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 	info, _ := b.Stats.Get(stats.Key{Kind: "template", ID: s.TplID}, now)
 	sender := b.senderFor(meta.From, meta.Host)
 	known := b.Rules.Covering(meta, now)
-	text := statebuilder.LineState(statebuilder.Line{Template: meta.Text, Example: meta.Example, Program: meta.Program,
+	// what the investigator has found out about this pattern so far (it decides what to look up)
+	mean, ents := b.background(ctx, s.TplID, meta.Example)
+	text := statebuilder.LineState(statebuilder.Line{Template: meta.Text, Example: meta.Example, Program: meta.Program, Meaning: mean, Entities: ents,
 		Sender: sender, Host: meta.Host, Stats: info, Known: known, Related: b.Incidents.Related("odd:"+s.TplID, now),
 		Notes: b.memoryAbout(ctx, meta.Host), Now: now})
 	exact := map[string]any{}
@@ -493,6 +499,13 @@ func (b *Bot) incidentState(in incident.Incident, s config.Sender, note string) 
 	}
 	for _, m := range b.memoryAbout(context.Background(), in.Host) {
 		fmt.Fprintf(&sb, "Operators told us: %s\n", m)
+	}
+	mean, ents := b.background(context.Background(), in.TplID, in.Facts["example"])
+	if mean != "" {
+		fmt.Fprintf(&sb, "What this message means (looked up, may be wrong): %s\n", mean)
+	}
+	for _, e := range ents {
+		fmt.Fprintf(&sb, "Outside party: %s\n", e)
 	}
 	if note != "" {
 		fmt.Fprintf(&sb, "Investigator's note (may be wrong): %s\n", note)

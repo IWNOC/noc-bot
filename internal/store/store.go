@@ -275,3 +275,39 @@ func (s *Store) LastAnswers(ctx context.Context, desk, subject string) (map[stri
 	}
 	return m, true
 }
+
+// NotesAbout returns the latest notes of a kind about one subject (newest first).
+func (s *Store) NotesAbout(ctx context.Context, kind, subject string, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT text FROM notes WHERE kind=? AND subject=? ORDER BY id DESC LIMIT ?`, kind, subject, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// NotesSince lists the texts of notes of a kind written after t (oldest first, at most 30).
+func (s *Store) NotesSince(ctx context.Context, kind string, t time.Time) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT text FROM notes WHERE kind=? AND at>? ORDER BY id LIMIT 30`, kind, ts(t))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var x string
+		if err := rows.Scan(&x); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}

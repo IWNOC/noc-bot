@@ -314,7 +314,8 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 		}
 	}
 	demoted := b.recentlyDemoted(ctx, now)
-	if len(items) == 0 && len(demoted) == 0 {
+	findings := b.takeFindings()
+	if len(items) == 0 && len(demoted) == 0 && len(findings) == 0 {
 		return
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -354,6 +355,12 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 	}
 	if len(items) > 0 {
 		sb.WriteString(strings.Join(lines, "\n") + "\n")
+	}
+	if len(findings) > 0 {
+		sb.WriteString("\n🔎 *調べてわかったこと*（AI の調査）\n")
+		for _, f := range findings {
+			sb.WriteString("• " + f + "\n")
+		}
 	}
 	if len(demoted) > 0 {
 		sb.WriteString("_反応がなかったので、次の種類はまとめに回すようにしました（メニューの「すぐ知らせて」で戻せます）：_ " + strings.Join(demoted, "、") + "\n")

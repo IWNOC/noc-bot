@@ -63,6 +63,13 @@ func (b *Bot) compose(ctx context.Context, in incident.Incident) (title, body, n
 	for _, m := range b.memoryAbout(ctx, in.Host) {
 		fmt.Fprintf(&sb, "運用者が教えてくれたこと: %s\n", m)
 	}
+	mean, ents := b.background(ctx, in.TplID, ex)
+	if mean != "" {
+		fmt.Fprintf(&sb, "このメッセージの意味（調べた結果。誤りの可能性あり）: %s\n", mean)
+	}
+	for _, e := range ents {
+		fmt.Fprintf(&sb, "外部の相手: %s\n", e)
+	}
 	input := sb.String()
 	msgs := []llm.Message{{Role: "system", Content: composeSystem}, {Role: "user", Content: input}}
 	out, steps, err := lm.Run(ctx, msgs, b.Tools(), 3, 1500, true)

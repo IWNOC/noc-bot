@@ -144,6 +144,9 @@ func (b *Bot) agentContext(ctx context.Context, inc *incident.Incident) string {
 		fmt.Fprintf(&sb, "known issue %s: %s (until %s)\n", k.ID, k.Reason, k.Expires.In(jst).Format("01/02 15:04"))
 	}
 	if inc != nil {
+		if mean, ents := b.background(ctx, inc.TplID, inc.Facts["example"]); mean != "" || len(ents) > 0 {
+			fmt.Fprintf(&sb, "\n## このスレッドのログについて調べてあること\n%s\n%s\n", mean, strings.Join(ents, "\n"))
+		}
 		facts, _ := json.Marshal(inc.Facts)
 		fmt.Fprintf(&sb, "\n## このスレッドの通知\nincident %s: kind=%s host=%s team=%s severity=%d since=%s pattern=%q facts=%s\n",
 			inc.ID, inc.Kind, inc.Host, inc.Team, inc.Severity, inc.Opened.In(jst).Format("01/02 15:04"), inc.Template, facts)
