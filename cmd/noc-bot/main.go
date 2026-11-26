@@ -22,6 +22,7 @@ import (
 	"github.com/IWNOC/noc-bot/internal/slackapp"
 	"github.com/IWNOC/noc-bot/internal/store"
 	"github.com/IWNOC/noc-bot/internal/teacher"
+	"github.com/IWNOC/noc-bot/internal/web"
 )
 
 func main() {
@@ -73,6 +74,9 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.Web.SearxURL != "" {
+		b.Web = web.New(cfg.Web.SearxURL)
+	}
 	if lm != nil && cfg.LLM.AgentM != "" {
 		b.Agent = llm.New(cfg.LLM.URL, os.Getenv(cfg.LLM.TokenEnv), cfg.LLM.AgentM, cfg.LLM.Timeout)
 	}

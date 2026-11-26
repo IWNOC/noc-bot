@@ -22,6 +22,13 @@ type Config struct {
 	Slack    Slack           `yaml:"slack"`
 	Store    Store           `yaml:"store"`
 	Clock    Clock           `yaml:"clock"`
+	Web      Web             `yaml:"web"`
+}
+
+// Web lets the conversation agent search the internet (a local SearXNG), read public pages and
+// look up who is behind an AS number or a public address.
+type Web struct {
+	SearxURL string `yaml:"searx_url"` // e.g. http://127.0.0.1:8888; empty: no web tools
 }
 
 type Listen struct {

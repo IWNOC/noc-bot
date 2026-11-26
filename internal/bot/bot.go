@@ -28,6 +28,7 @@ import (
 	"github.com/IWNOC/noc-bot/internal/stats"
 	"github.com/IWNOC/noc-bot/internal/store"
 	"github.com/IWNOC/noc-bot/internal/teacher"
+	"github.com/IWNOC/noc-bot/internal/web"
 )
 
 // Bot is the running pipeline.
@@ -41,6 +42,7 @@ type Bot struct {
 	Laya      *laya.Client // nil: no laya
 	LLM       *llm.Client  // nil: no LLM
 	Agent     *llm.Client  // conversation model; nil: use LLM
+	Web       *web.Client  // internet lookups for the conversation agent; nil: none
 	Notify    notify.Notifier
 	Store     *store.Store
 	Known     *teacher.Known

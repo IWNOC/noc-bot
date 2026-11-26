@@ -17,5 +17,8 @@ llm:
 slack:
   channel: ""   # channel id; tokens: SLACK_BOT_TOKEN, SLACK_APP_TOKEN
 
+web:
+  searx_url: "http://127.0.0.1:8888"   # local SearXNG for web_search; empty disables web tools
+
 store:
   path: /data/noc-bot.db
