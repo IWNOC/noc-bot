@@ -131,3 +131,18 @@ func TestStormIsBundled(t *testing.T) {
 		t.Fatalf("posts %v", fs.posts)
 	}
 }
+
+func TestSameHostStoryJoinsThread(t *testing.T) {
+	b, _, _, _ := setup(t, "{}")
+	now := time.Now()
+	first, _ := b.Incidents.Signal(rules.Signal{Kind: "odd", Key: "a", Host: "eps-rt-02", TplID: "dhcp1", At: now})
+	b.Incidents.Update(first.Key, func(x *incident.Incident) { x.Tier, x.Thread, x.Notified = TierNow, "ts-first", now })
+	next, _ := b.Incidents.Signal(rules.Signal{Kind: "odd", Key: "b", Host: "eps-rt-02", TplID: "dhcp2", At: now.Add(3 * time.Minute)})
+	if th, why := b.relatedThread(next); th != "ts-first" || !strings.Contains(why, first.ID) {
+		t.Fatalf("got %q %q", th, why)
+	}
+	other, _ := b.Incidents.Signal(rules.Signal{Kind: "odd", Key: "c", Host: "eps-rt-01", TplID: "bgp", At: now.Add(3 * time.Minute)})
+	if th, _ := b.relatedThread(other); th != "" {
+		t.Fatalf("another host joined: %q", th)
+	}
+}

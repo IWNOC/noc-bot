@@ -322,6 +322,20 @@ func (b *Bot) agentTools(channel, thread, user, comment string, inc *incident.In
 				}
 				return propose("known_issue", map[string]any{"reason": a.Reason, "scope": a.Scope, "days": a.Days}, a.Summary, in)
 			}},
+		{Name: "propose_retract", Description: "Propose to take back the verdicts people gave on an alert (buttons pressed by mistake: 'その学習誤り').",
+			Parameters: obj(map[string]any{"incident_id": str("incident id or 'this'"), "summary": summary}, "incident_id", "summary"),
+			Run: func(_ context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					IncidentID string `json:"incident_id"`
+					Summary    string
+				}
+				json.Unmarshal(raw, &a)
+				in, err := findInc(a.IncidentID)
+				if err != nil {
+					return "", err
+				}
+				return propose("retract", map[string]any{}, a.Summary, in)
+			}},
 		{Name: "propose_label", Description: "Propose the operator's verdict on an alert as a label for learning: right or false alarm, impact 0-3, owning team.",
 			Parameters: obj(map[string]any{
 				"incident_id": str("incident id or 'this'"),
@@ -435,6 +449,8 @@ func (b *Bot) cardText(p *proposal) (string, error) {
 		in := p.Incident
 		scope := map[string]string{"template": "このログのパターンだけ", "program": in.Host + " のこのプログラム", "host": in.Host + " からのログ全部"}[p.Args["scope"].(string)]
 		fmt.Fprintf(&sb, "既知の問題として通知を止める：%s（%s）\n理由：%v\n期限：%v日（期限後はまた通知します。止めている間も件数は数えます）", in.Host, scope, p.Args["reason"], p.Args["days"])
+	case "retract":
+		fmt.Fprintf(&sb, "通知 %s に付けた人の判定を取り消す（学習データから外します。laya の学習済みの状態はイベント後に作り直すときに反映）", p.Incident.ID)
 	case "label":
 		fmt.Fprintf(&sb, "通知 %s の判定：", p.Incident.ID)
 		if v, ok := p.Args["correct"].(bool); ok {
@@ -508,6 +524,13 @@ func (b *Bot) OnProposal(ctx context.Context, id string, accept bool, user strin
 			return "登録に失敗しました: " + err.Error()
 		}
 		b.teach(ctx, *in, map[string]any{"odd": false}, map[string]any{"cause_class": "known_issue", "page_now": false}, true, user)
+	case "retract":
+		intent = "label"
+		n, err := b.Store.RetractLabels(ctx, p.Incident.ID, b.Now())
+		if err != nil {
+			return "取り消しに失敗しました: " + err.Error()
+		}
+		b.Store.Note(ctx, b.Now(), "retracted", p.Incident.ID, fmt.Sprintf("%d labels", n), user)
 	case "label":
 		intent = "label"
 		in := p.Incident

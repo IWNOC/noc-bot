@@ -246,15 +246,14 @@ func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
 		b.Store.Incident(context.Background(), in.ID, in.Key, in.Opened, in) // digest / silent: kept, not posted now
 		return
 	}
-	if b.stormy(b.Now()) {
+	if prev, why := b.relatedThread(in); prev != "" {
+		// a recurrence, or the same host's story continuing: add to that thread, not a new post
+		in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Thread = prev; i.Why = why })
+	} else if b.stormy(b.Now()) {
 		b.tierMu.Lock()
 		b.stormQ = append(b.stormQ, in)
 		b.tierMu.Unlock()
 		return
-	}
-	if prev := b.previousThread(in); prev != "" {
-		// the same kind came back within hours: add to the old thread instead of a new post
-		in, _ = b.Incidents.Update(in.Key, func(i *incident.Incident) { i.Thread = prev; i.Why = "再発（前回のスレッドに追記）" })
 	}
 	if b.acquireLLM(ctx, 20*time.Second) {
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)

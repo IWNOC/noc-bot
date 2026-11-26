@@ -38,3 +38,25 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatal("kv")
 	}
 }
+
+func TestRetractLabels(t *testing.T) {
+	ctx := context.Background()
+	s, _ := Open(filepath.Join(t.TempDir(), "r.db"))
+	defer s.Close()
+	now := time.Now()
+	s.Label(ctx, now, "line", "t", map[string]any{"odd": true}, "human", "U1", false, "incident 1126-0070")
+	s.Label(ctx, now, "incident", "t", map[string]any{"severity": 2}, "human", "U1", true, "incident 1126-0070")
+	s.Label(ctx, now, "line", "t", map[string]any{"odd": true}, "teacher", "noc-bot", false, "incident 1126-0070")
+	if n, err := s.RetractLabels(ctx, "1126-0070", now); err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	// reopening an existing database keeps the column
+	path := filepath.Join(t.TempDir(), "r2.db")
+	a, _ := Open(path)
+	a.Close()
+	if b, err := Open(path); err != nil {
+		t.Fatal(err)
+	} else {
+		b.Close()
+	}
+}

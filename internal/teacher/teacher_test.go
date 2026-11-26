@@ -57,3 +57,16 @@ func TestAuth(t *testing.T) {
 		t.Fatalf("got %d", rr.Code)
 	}
 }
+
+func TestShortAnswersAndTrailingProse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reply := "{\"answers\": {\"odd\": false, \"team\": \"l2l3\", \"sev\": {\"answer\": 1, \"evidence\": \"a {quoted} brace\"}}}\n\nWait — I must {double-check}"
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": reply}}}})
+	}))
+	defer srv.Close()
+	tc := &Teacher{Known: NewKnown(), LLM: llm.New(srv.URL, "", "m", 5*time.Second), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a, ev := tc.Answer(context.Background(), Request{Desk: "line", Text: "rec", Questions: qs()})
+	if a["odd"] != false || a["team"] != "l2l3" || a["sev"] != 1 || ev["odd"] == "" {
+		t.Fatalf("got %v %v", a, ev)
+	}
+}

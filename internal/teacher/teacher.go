@@ -244,33 +244,69 @@ func (t *Teacher) ask(ctx context.Context, desk, text, extra string, qs map[stri
 	if err != nil {
 		return nil, nil, err
 	}
+	// The model does not always answer in the asked shape: {"q": {"answer": .., "evidence": ..}}
+	// or the short {"q": value}, sometimes followed by its own musings. Read the first JSON object
+	// and accept both shapes; a bare value carries no quote, so it is marked as such.
 	var out struct {
-		Answers map[string]struct {
-			Answer   any    `json:"answer"`
-			Evidence string `json:"evidence"`
-		} `json:"answers"`
+		Answers map[string]json.RawMessage `json:"answers"`
 	}
-	if err := json.Unmarshal([]byte(extractJSON(content)), &out); err != nil {
+	if err := json.NewDecoder(strings.NewReader(firstObject(content))).Decode(&out); err != nil || out.Answers == nil {
 		return nil, nil, fmt.Errorf("teacher: unparsable reply: %.200s", content)
 	}
 	answers, evidence := map[string]any{}, map[string]string{}
-	for id, a := range out.Answers {
+	for id, raw := range out.Answers {
 		q, ok := qs[id]
-		if !ok || strings.TrimSpace(a.Evidence) == "" {
+		if !ok {
 			continue
 		}
-		if v, ok := q.valid(a.Answer); ok {
-			answers[id], evidence[id] = v, a.Evidence
+		var full struct {
+			Answer   any    `json:"answer"`
+			Evidence string `json:"evidence"`
+		}
+		var val any
+		ev := ""
+		if json.Unmarshal(raw, &full) == nil && full.Answer != nil {
+			val, ev = full.Answer, strings.TrimSpace(full.Evidence)
+			if ev == "" {
+				continue // asked for a quote and gave none: a guess
+			}
+		} else if json.Unmarshal(raw, &val) != nil {
+			continue
+		} else {
+			ev = "(short answer, no quote)"
+		}
+		if v, ok := q.valid(val); ok {
+			answers[id], evidence[id] = v, ev
 		}
 	}
 	return answers, evidence, nil
 }
 
-// extractJSON trims code fences and prose around a JSON object.
-func extractJSON(s string) string {
-	i, j := strings.IndexByte(s, '{'), strings.LastIndexByte(s, '}')
-	if i < 0 || j < i {
+// firstObject returns the first complete JSON object in s (ignoring code fences and trailing prose).
+func firstObject(s string) string {
+	i := strings.IndexByte(s, '{')
+	if i < 0 {
 		return s
 	}
-	return s[i : j+1]
+	depth, inStr, esc := 0, false, false
+	for j := i; j < len(s); j++ {
+		c := s[j]
+		switch {
+		case esc:
+			esc = false
+		case c == '\\' && inStr:
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case inStr:
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return s[i : j+1]
+			}
+		}
+	}
+	return s[i:]
 }

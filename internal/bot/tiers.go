@@ -224,6 +224,31 @@ func (b *Bot) flushStorm(ctx context.Context) {
 	}
 }
 
+// sameHostWindow: alerts on one host this close together are one story (a DHCP failure brings
+// resolver and reload messages with it); they share a thread.
+const sameHostWindow = 15 * time.Minute
+
+// relatedThread finds where a new "now" alert belongs: the thread of the same kind within the
+// cooldown (a recurrence), or of an alert on the same host in the last few minutes (same story).
+func (b *Bot) relatedThread(in incident.Incident) (thread, why string) {
+	if t := b.previousThread(in); t != "" {
+		return t, "再発（前回のスレッドに追記）"
+	}
+	var best incident.Incident
+	for _, o := range b.Incidents.All() {
+		if o.ID == in.ID || o.Thread == "" || o.Tier != TierNow || o.Host != in.Host || in.Opened.Sub(o.Notified) > sameHostWindow {
+			continue
+		}
+		if o.Notified.After(best.Notified) {
+			best = o
+		}
+	}
+	if best.Thread != "" {
+		return best.Thread, "同じ機器で直前に知らせた件（" + best.ID + "）の続き"
+	}
+	return "", ""
+}
+
 // previousThread finds the thread of the last posted incident of the same kind within the
 // cooldown, so a recurrence is added there instead of a new post.
 func (b *Bot) previousThread(in incident.Incident) string {

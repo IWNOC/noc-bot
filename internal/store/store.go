@@ -48,6 +48,15 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// added later: labels people take back are kept but marked, and left out when laya is rebuilt
+	var n int
+	db.QueryRow(`SELECT count(*) FROM pragma_table_info('labels') WHERE name='retracted_at'`).Scan(&n)
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE labels ADD COLUMN retracted_at TEXT`); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -310,4 +319,13 @@ func (s *Store) NotesSince(ctx context.Context, kind string, t time.Time) ([]str
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+// RetractLabels marks the human labels given on an incident as taken back. It returns how many.
+func (s *Store) RetractLabels(ctx context.Context, incidentID string, at time.Time) (int64, error) {
+	r, err := s.db.ExecContext(ctx, `UPDATE labels SET retracted_at=? WHERE origin='human' AND note=? AND retracted_at IS NULL`, ts(at), "incident "+incidentID)
+	if err != nil {
+		return 0, err
+	}
+	return r.RowsAffected()
 }
