@@ -20,6 +20,8 @@ type Handler interface {
 	// OnAnswer: a button or menu on an alert or digest. value is the option for selects. It returns
 	// the reply to post and, when the change can be undone, a key for an undo button.
 	OnAnswer(ctx context.Context, incidentID, action, value, user string) (reply, undoKey string)
+	// OnAsk: a person answered "is this pattern worth noticing?" from the digest.
+	OnAsk(ctx context.Context, pattern string, odd bool, user string) string
 	// OnUndo: the undo button under a reply.
 	OnUndo(ctx context.Context, key, user string) string
 	// OnReaction: an emoji added to one of noc-bot's messages.
@@ -42,6 +44,8 @@ const (
 	ActTeam     = "nb_team"     // menu: owning team
 	ActPromote  = "nb_promote"  // digest menu: すぐ知らせて
 	ActMuteSel  = "nb_mute_sel" // digest menu: 通知不要
+	ActAskYes   = "nb_ask_yes"  // digest menu: this pattern is worth noticing
+	ActAskNo    = "nb_ask_no"   // digest menu: this pattern is fine
 	ActUndoTier = "nb_undo"
 	ActAccept   = "nb_accept"
 	ActReject   = "nb_reject"
@@ -142,7 +146,7 @@ func (a *App) answerButtons(incidentID string) *slack.ActionBlock {
 type DigestItem struct{ ID, Label string }
 
 // PostDigest posts the digest with "すぐ知らせて" and "通知不要" menus over its items.
-func (a *App) PostDigest(ctx context.Context, text string, items []DigestItem) (string, error) {
+func (a *App) PostDigest(ctx context.Context, text string, items, asks []DigestItem) (string, error) {
 	blocks := sections(text)
 	if len(items) > 0 {
 		var up, mute []*slack.OptionBlockObject
@@ -153,6 +157,16 @@ func (a *App) PostDigest(ctx context.Context, text string, items []DigestItem) (
 		blocks = append(blocks, slack.NewActionBlock("nb_digest",
 			slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "🔴 この種類はすぐ知らせて", false, false), ActPromote, up...),
 			slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "🔕 この種類は通知不要", false, false), ActMuteSel, mute...)))
+	}
+	if len(asks) > 0 {
+		var yes, no []*slack.OptionBlockObject
+		for _, it := range asks {
+			yes = append(yes, slack.NewOptionBlockObject(it.ID, slack.NewTextBlockObject(slack.PlainTextType, clip(it.Label, 74), false, false), nil))
+			no = append(no, slack.NewOptionBlockObject(it.ID, slack.NewTextBlockObject(slack.PlainTextType, clip(it.Label, 74), false, false), nil))
+		}
+		blocks = append(blocks, slack.NewActionBlock("nb_asks",
+			slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "🙋 これは気にすべき", false, false), ActAskYes, yes...),
+			slack.NewOptionsSelectBlockElement(slack.OptTypeStatic, slack.NewTextBlockObject(slack.PlainTextType, "👌 これは気にしなくていい", false, false), ActAskNo, no...)))
 	}
 	_, ts, err := a.API.PostMessageContext(ctx, a.Channel, slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionDisableLinkUnfurl())
 	a.posted(a.Channel, "", ts, err)
@@ -278,6 +292,8 @@ func (a *App) onInteraction(ctx context.Context, cb slack.InteractionCallback) {
 			reply, undo = a.h.OnAnswer(ctx, inc, act.ActionID, v, cb.User.ID)
 		case ActPromote, ActMuteSel:
 			reply, undo = a.h.OnAnswer(ctx, act.SelectedOption.Value, act.ActionID, "", cb.User.ID)
+		case ActAskYes, ActAskNo:
+			reply = a.h.OnAsk(ctx, act.SelectedOption.Value, act.ActionID == ActAskYes, cb.User.ID)
 		case ActUndoTier:
 			reply = a.h.OnUndo(ctx, act.Value, cb.User.ID)
 		case ActAccept, ActReject:

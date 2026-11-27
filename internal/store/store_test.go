@@ -60,3 +60,27 @@ func TestRetractLabels(t *testing.T) {
 		b.Close()
 	}
 }
+
+func TestLinesSearchAndPrune(t *testing.T) {
+	ctx := context.Background()
+	s, _ := Open(filepath.Join(t.TempDir(), "l.db"))
+	defer s.Close()
+	now := time.Now()
+	s.AddLines(ctx, []Line{
+		{At: now.Add(-8 * 24 * time.Hour), Host: "eps-rt-01", Program: "Bgp", Msg: "old line"},
+		{At: now.Add(-2 * time.Hour), Host: "eps-rt-01", Program: "Bgp", Msg: "%BGP-5-ADJCHANGE: peer 163.220.192.86 Idle"},
+		{At: now.Add(-90 * time.Minute), Host: "noc-l2-06", Program: "Ebra", Msg: "Ethernet5 100%_down"},
+		{At: now.Add(-time.Minute), Host: "eps-rt-01", Program: "Bgp", Msg: "%BGP-5-ADJCHANGE: peer 163.220.192.86 Established"},
+	})
+	ls, total, err := s.SearchLines(ctx, "eps-rt-01", "ADJCHANGE", now.Add(-3*time.Hour), now, 1)
+	if err != nil || total != 2 || len(ls) != 1 || ls[0].Msg[len(ls[0].Msg)-11:] != "Established" {
+		t.Fatalf("%v total=%d %+v", err, total, ls)
+	}
+	if _, total, _ := s.SearchLines(ctx, "", "100%_down", now.Add(-3*time.Hour), now, 10); total != 1 {
+		t.Fatalf("literal %% and _ must match literally: %d", total)
+	}
+	s.PruneLines(ctx, 7*24*time.Hour)
+	if _, total, _ := s.SearchLines(ctx, "", "", now.Add(-30*24*time.Hour), now, 10); total != 3 {
+		t.Fatalf("prune: %d", total)
+	}
+}

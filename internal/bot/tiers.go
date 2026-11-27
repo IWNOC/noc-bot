@@ -331,7 +331,7 @@ func (b *Bot) undoTier(ctx context.Context, key, user string) string {
 
 // DigestPoster posts the digest with promote/mute menus.
 type DigestPoster interface {
-	PostDigest(ctx context.Context, text string, items []slackapp.DigestItem) (string, error)
+	PostDigest(ctx context.Context, text string, items, asks []slackapp.DigestItem) (string, error)
 }
 
 const digestSystem = `あなたはイベントネットワークの NOC の運用担当です。この30分の項目一覧を見て、全体の所感を「1行」で書きます。
@@ -346,7 +346,8 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 	}
 	demoted := b.recentlyDemoted(ctx, now)
 	findings := b.takeFindings()
-	if len(items) == 0 && len(demoted) == 0 && len(findings) == 0 {
+	asks := b.asks(ctx, now)
+	if len(items) == 0 && len(demoted) == 0 && len(findings) == 0 && len(asks) == 0 {
 		return
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -395,6 +396,14 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 			sb.WriteString("• " + f + "\n")
 		}
 	}
+	var askMenu []slackapp.DigestItem
+	if len(asks) > 0 {
+		sb.WriteString("\n🙋 *判断に迷ったログ*（下のメニューで教えてもらえると、次から自分で判断できます）\n")
+		for _, a := range asks {
+			fmt.Fprintf(&sb, "• %s：%s\n   例：`%s`\n", a.Host, a.Name, a.Example)
+			askMenu = append(askMenu, slackapp.DigestItem{ID: a.ID, Label: clipText(a.Host+" "+a.Name, 70)})
+		}
+	}
 	if len(demoted) > 0 {
 		sb.WriteString("_反応がなかったので、次の種類はまとめに回すようにしました（メニューの「すぐ知らせて」で戻せます）：_ " + strings.Join(demoted, "、") + "\n")
 	}
@@ -408,7 +417,7 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 	var ts string
 	var err error
 	if dp, ok := b.Notify.(DigestPoster); ok {
-		ts, err = dp.PostDigest(ctx, sb.String(), menu)
+		ts, err = dp.PostDigest(ctx, sb.String(), menu, askMenu)
 	} else {
 		ts, err = b.Notify.Post(ctx, sb.String(), "")
 	}

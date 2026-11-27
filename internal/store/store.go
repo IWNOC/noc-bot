@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS incidents (
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS threads (channel TEXT NOT NULL, ts TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(channel, ts));
 CREATE TABLE IF NOT EXISTS verdicts (desk TEXT NOT NULL, subject TEXT NOT NULL, at TEXT NOT NULL, answers TEXT NOT NULL, PRIMARY KEY(desk, subject));
+CREATE TABLE IF NOT EXISTS lines (at TEXT NOT NULL, host TEXT NOT NULL, program TEXT NOT NULL, msg TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS lines_at ON lines(at);
+CREATE INDEX IF NOT EXISTS lines_host ON lines(host, at);
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL, who TEXT NOT NULL);
 `
@@ -383,6 +386,157 @@ func (s *Store) LineDecisionsOf(ctx context.Context, host string, from, to time.
 			return nil, err
 		}
 		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// Line is one received log line kept for later questions.
+type Line struct {
+	At                 time.Time
+	Host, Program, Msg string
+}
+
+// AddLines stores received lines in one transaction.
+func (s *Store) AddLines(ctx context.Context, ls []Line) error {
+	if len(ls) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	st, err := tx.PrepareContext(ctx, `INSERT INTO lines(at,host,program,msg) VALUES(?,?,?,?)`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	for _, l := range ls {
+		if _, err := st.ExecContext(ctx, ts(l.At), l.Host, l.Program, l.Msg); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	st.Close()
+	return tx.Commit()
+}
+
+// PruneLines deletes lines older than keep.
+func (s *Store) PruneLines(ctx context.Context, keep time.Duration) {
+	s.db.ExecContext(ctx, `DELETE FROM lines WHERE at<?`, ts(time.Now().Add(-keep)))
+}
+
+// SearchLines finds stored lines: by host (exact, optional), text contained in the message or
+// program (optional), in a time range, newest last. It also returns how many matched in total.
+func (s *Store) SearchLines(ctx context.Context, host, contains string, from, to time.Time, limit int) ([]Line, int, error) {
+	where, args := `at>=? AND at<=?`, []any{ts(from), ts(to)}
+	if host != "" {
+		where += ` AND host=?`
+		args = append(args, host)
+	}
+	if contains != "" {
+		where += " AND (msg LIKE ? ESCAPE '!' OR program LIKE ? ESCAPE '!')"
+		pat := "%" + strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(contains) + "%"
+		args = append(args, pat, pat)
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM lines WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT at,host,program,msg FROM (SELECT rowid r,at,host,program,msg FROM lines WHERE `+where+` ORDER BY rowid DESC LIMIT ?) ORDER BY r`, append(args, limit)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []Line
+	for rows.Next() {
+		var l Line
+		var at string
+		if err := rows.Scan(&at, &l.Host, &l.Program, &l.Msg); err != nil {
+			return nil, 0, err
+		}
+		l.At, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, l)
+	}
+	return out, total, rows.Err()
+}
+
+// IncidentsBetween returns stored incident bodies (JSON) opened in a time range, oldest first.
+func (s *Store) IncidentsBetween(ctx context.Context, from, to time.Time, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT body FROM incidents WHERE opened>=? AND opened<=? ORDER BY opened LIMIT ?`, ts(from), ts(to), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// SearchNotes finds notebook and memory entries containing a word, newest first.
+func (s *Store) SearchNotes(ctx context.Context, word string, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT at, kind, subject, text FROM notes WHERE kind IN ('memory','meaning','entity','observation','hypothesis','handover') AND (text LIKE ? OR subject LIKE ?) ORDER BY id DESC LIMIT ?`,
+		"%"+word+"%", "%"+word+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var at, kind, subject, text string
+		if err := rows.Scan(&at, &kind, &subject, &text); err != nil {
+			return nil, err
+		}
+		if t, err := time.Parse(time.RFC3339Nano, at); err == nil {
+			at = t.In(time.FixedZone("JST", 9*3600)).Format("01/02 15:04")
+		}
+		out = append(out, at+" ["+kind+"] "+subject+": "+text)
+	}
+	return out, rows.Err()
+}
+
+// NotesBetween lists notes of the given kinds in a time range, oldest first.
+func (s *Store) NotesBetween(ctx context.Context, from, to time.Time, limit int, kinds ...string) ([]string, error) {
+	q := `SELECT kind, subject, text FROM notes WHERE at>=? AND at<=? AND kind IN (?` + strings.Repeat(`,?`, len(kinds)-1) + `) ORDER BY id LIMIT ?`
+	args := []any{ts(from), ts(to)}
+	for _, k := range kinds {
+		args = append(args, k)
+	}
+	rows, err := s.db.QueryContext(ctx, q, append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var kind, subject, text string
+		if err := rows.Scan(&kind, &subject, &text); err != nil {
+			return nil, err
+		}
+		out = append(out, "["+kind+"] "+subject+": "+text)
+	}
+	return out, rows.Err()
+}
+
+// NotesBetweenRaw lists notes of one kind in a time range with their subjects, newest first.
+func (s *Store) NotesBetweenRaw(ctx context.Context, from, to time.Time, kind string) ([]NoteRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, at, subject, text, who FROM notes WHERE kind=? AND at>=? AND at<=? ORDER BY id DESC LIMIT 100`, kind, ts(from), ts(to))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NoteRow
+	for rows.Next() {
+		var n NoteRow
+		if err := rows.Scan(&n.ID, &n.At, &n.Subject, &n.Text, &n.Who); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }

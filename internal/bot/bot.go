@@ -32,6 +32,10 @@ import (
 	"github.com/IWNOC/noc-bot/internal/zabbix"
 )
 
+// lineKeep is how long received lines are kept in noc-bot's own store, so "what happened at 15:00
+// yesterday?" can be answered without reaching into the syslog server's archive.
+const lineKeep = 7 * 24 * time.Hour
+
 // Bot is the running pipeline.
 type Bot struct {
 	Cfg       *config.Config
@@ -57,6 +61,9 @@ type Bot struct {
 	started  time.Time
 	heldSeen map[string]bool // held batches already shown to people
 	zbxDone  map[string]bool // Zabbix problems already turned into labels
+	lineBuf  []store.Line    // received lines waiting to be stored (kept a few days for later questions)
+	lastHand time.Time
+	asked    map[string]bool // patterns already put before people in a digest
 	teams    map[string]config.Team
 	senders  []config.Sender // added from Slack; checked before the config file's
 	props    map[string]*proposal
@@ -79,7 +86,7 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	}
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
-		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, heldSeen: map[string]bool{}, zbxDone: map[string]bool{}, inv: invState{told: map[string]time.Time{}}, started: time.Now(), Now: time.Now,
+		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, heldSeen: map[string]bool{}, zbxDone: map[string]bool{}, asked: map[string]bool{}, inv: invState{told: map[string]time.Time{}}, started: time.Now(), Now: time.Now,
 		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2), configAt: map[string]time.Time{}}
 	for k, v := range cfg.Teams {
 		b.teams[k] = v
@@ -131,6 +138,9 @@ func (b *Bot) Handle(l ingest.Line) {
 		ex = ex[len(ex)-8:]
 	}
 	b.examples[pid] = ex
+	if len(b.lineBuf) < 50000 {
+		b.lineBuf = append(b.lineBuf, store.Line{At: l.Recv, Host: l.Host, Program: l.Program, Msg: l.Msg})
+	}
 	b.mu.Unlock()
 	b.noteConfigChange(l.Host, l.Msg, l.Recv)
 	meta := rules.TemplateMeta{ID: m.ID, Text: m.Template, Program: l.Program, Host: l.Host, From: l.From, Example: l.Msg}
@@ -212,6 +222,17 @@ func (b *Bot) Run(ctx context.Context, lines <-chan ingest.Line) {
 
 func (b *Bot) minute(ctx context.Context, now time.Time) {
 	b.Stats.Tick(now)
+	b.mu.Lock()
+	buf := b.lineBuf
+	b.lineBuf = nil
+	b.mu.Unlock()
+	if err := b.Store.AddLines(ctx, buf); err != nil {
+		b.Log.Warn("store lines", "err", err)
+	}
+	if now.Minute() == 7 {
+		b.Store.PruneLines(ctx, lineKeep)
+	}
+	b.handover(ctx, now)
 	for _, s := range b.Rules.Evaluate(now) {
 		in, opened := b.Incidents.Signal(s)
 		if opened {

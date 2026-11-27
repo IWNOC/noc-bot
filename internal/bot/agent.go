@@ -50,6 +50,7 @@ const agentSystem = `あなたは「noc-bot」です。イベントネットワ�
 - 書式は Slack 用です：太字は *こう*、箇条書きは「• 」、コードやアドレスはバッククォート1つで囲む。Markdown の **太字** や # 見出し、表は使いません。IPv6 アドレスは必ずバッククォートで囲みます。
 - 時刻はすべて JST（noc-bot がログを受け取った時刻）で扱い、JST で書きます。機器が自分で書いた時刻は使いません。
 - 「まだ起きている？」「いつから？」「収まった？」には、必ず pattern_history で時間ごとの件数を見てから答えます。直近数分の件数だけで「収まった」と言ってはいけません。level が NORMAL でも「最近と同じ頻度で続いている」だけで、問題が続いていることがあります。
+- 過去のことを聞かれたら（「昨日の15時ごろ何があった？」「前にも出てた？」）、search_logs（7日分のログ）、past_alerts（過去の通知）、notebook_search（調査ノートと記憶）で確かめます。覚えていないと答える前に、必ず探します。
 - 同僚に話すように、ていねいだけれど硬すぎない言葉で書きます。内部の言葉は使いません：道具の名前（propose_… など）、tpl:… の ID、NORMAL や FAR ABOVE NORMAL、severity の数字はそのまま書かず、「担当の登録」「このログ」「いつもどおりの頻度」「いつもよりかなり多い」「影響は小さい」のように言い換えます。人は ID ではなく名前で呼びます。
 - 同じ提案を何度も繰り返しません。一度断られた・反応がなかった提案は、聞かれるまで出しません。
 - 自分にできないこと（定期実行、Slack 以外への連絡、機器の操作、ログに無い情報）は一言で伝え、長い説明はしません。雑談や冗談には短く付き合って構いませんが、特定の人についての憶測は書きません。
@@ -493,7 +494,7 @@ func (b *Bot) cardText(p *proposal) (string, error) {
 		fmt.Fprintf(&sb, "既知の問題として通知を止める：%s（%s）\n理由：%v\n期限：%v日（期限後はまた通知します。止めている間も件数は数えます）", in.Host, scope, p.Args["reason"], p.Args["days"])
 	case "held":
 		fmt.Fprintf(&sb, "窓口「%v」の質問「%v」で、新しく届いた正解がこれまで学んだ内容と大きく食い違っています。\n理由（laya）：%v\n"+
-			"*登録* ＝ 新しい正解のほうを学ぶ（運用の方針や状況が変わった場合）。*却下* ＝ その分を捨てる（先生役の誤りと思われる場合）。", p.Args["desk"], p.Args["question"], p.Args["why"])
+			"*登録* ＝ 新しい正解のほうを学ぶ（運用の方針や状況が変わった場合）。*却下* ＝ その分を捨てる（先生役の誤りと思われる場合）。", p.Args["desk"], p.Args["question"], heldWhy(fmt.Sprint(p.Args["why"])))
 	case "retract":
 		fmt.Fprintf(&sb, "通知 %s に付けた人の判定を取り消す（学習データから外します。laya の学習済みの状態はイベント後に作り直すときに反映）", p.Incident.ID)
 	case "label":
@@ -655,4 +656,14 @@ func clipText(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// heldWhy pulls the readable part out of laya-svc's held reason.
+func heldWhy(raw string) string {
+	why := raw
+	if i := strings.Index(raw, "why:"); i >= 0 {
+		why = strings.TrimSuffix(strings.TrimSpace(raw[i+4:]), "]")
+	}
+	why = strings.NewReplacer("the heads agree with this batch", "新しい正解と laya の答えが合う割合は", "of the time, against", "。これまでの正解とは", "for your answers so far", "合っていました").Replace(why)
+	return why
 }

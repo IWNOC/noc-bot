@@ -296,3 +296,25 @@ func TestHeldBatchSurfacedAndResolved(t *testing.T) {
 		t.Fatalf("laya calls %v", got)
 	}
 }
+
+func TestParseJSTAndOnAsk(t *testing.T) {
+	now := time.Date(2026, 11, 27, 6, 0, 0, 0, time.UTC) // 15:00 JST
+	if got, err := parseJST("14:30", now); err != nil || got.UTC().Hour() != 5 || got.UTC().Minute() != 30 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if got, err := parseJST("2026-11-26 15:00", now); err != nil || got.UTC().Day() != 26 || got.UTC().Hour() != 6 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if _, err := parseJST("yesterday", now); err == nil {
+		t.Fatal("bad time accepted")
+	}
+	b, _, calls, _ := setup(t, "{}")
+	out := b.OnAsk(context.Background(), "tpl1", false, "U1")
+	if !strings.Contains(out, "気にしなくてよい") {
+		t.Fatal(out)
+	}
+	v, ok := b.Store.Verdict(context.Background(), "line", "tpl1")
+	if !ok || v["odd"] != false || len(*calls) != 1 || (*calls)[0].Origin != "human" {
+		t.Fatalf("verdict %v calls %+v", v, *calls)
+	}
+}
