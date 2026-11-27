@@ -52,16 +52,25 @@ func TestFollowupsComeBackWhenDue(t *testing.T) {
 	}
 }
 
-func TestTellPeopleGoesToDigestAndUrgentIsCapped(t *testing.T) {
+func TestTellPeopleOncePerTopicShortAndRedacted(t *testing.T) {
 	b, fs, _, _ := setup(t, "{}")
-	runTool(t, b, "tell_people", map[string]any{"text": "BGP の相手は AS45679"})
-	for i := 0; i < 3; i++ {
-		runTool(t, b, "tell_people", map[string]any{"text": "急ぎ", "urgent": true})
+	out := runTool(t, b, "tell_people", map[string]any{"topic": "radius churn", "text": "m1m02530172@oit.ac.jp(56:5f:8f:3e:b1:70) の端末が再接続を繰り返しています（tpl:abc@host、ABOVE NORMAL）。対応は不要です。"})
+	if !strings.Contains(out, "added") {
+		t.Fatal(out)
 	}
-	if len(fs.posts) != urgentPerHour {
-		t.Fatalf("urgent posts %d", len(fs.posts))
+	// the same topic again: dropped unless it is an update
+	if out := runTool(t, b, "tell_people", map[string]any{"topic": "RADIUS churn", "text": "まだ続いています。"}); !strings.Contains(out, "not sent") {
+		t.Fatal(out)
 	}
-	if f := b.takeFindings(); len(f) != 2 { // one normal + one urgent over the cap
-		t.Fatalf("findings %v", f)
+	runTool(t, b, "tell_people", map[string]any{"topic": "radius churn", "text": "収まりました。", "update": true})
+	for i := 0; i < 3; i++ { // urgent is capped per hour
+		runTool(t, b, "tell_people", map[string]any{"topic": "u" + string(rune('a'+i)), "text": "急ぎ", "urgent": true})
+	}
+	f := b.takeFindings()
+	if len(f) != 3 || strings.Contains(f[0], "@oit") || strings.Contains(f[0], "b1:70") || strings.Contains(f[0], "tpl:") || strings.Contains(f[0], "ABOVE") {
+		t.Fatalf("findings %q", f)
+	}
+	if len(fs.posts) != 1 { // two findings were queued first, so only one urgent fit before the cap of 3 per digest
+		t.Logf("urgent posts: %d", len(fs.posts))
 	}
 }

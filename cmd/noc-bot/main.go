@@ -140,7 +140,7 @@ func run(cfgPath string, log *slog.Logger) error {
 			stop()
 		}
 	}()
-	log.Info("noc-bot started", "tcp", cfg.Listen.TCP, "http", cfg.Listen.HTTP, "laya", ly != nil, "llm", lm != nil)
+	log.Info("noc-bot started", "tcp", cfg.Listen.TCP, "http", cfg.Listen.HTTP, "laya", ly != nil, "llm", lm != nil, "zabbix", b.Zabbix != nil, "web", b.Web != nil)
 	b.Run(ctx, in.Out)
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

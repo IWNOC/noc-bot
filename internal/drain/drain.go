@@ -45,8 +45,11 @@ func Mask(msg string) string {
 	for _, m := range masks {
 		msg = m.re.ReplaceAllString(msg, m.tok)
 	}
-	return msg
+	// a list of numbers of any length is one thing ("[<NUM>, <NUM>, …]")
+	return numList.ReplaceAllString(msg, "<NUMS>")
 }
+
+var numList = regexp.MustCompile(`(?:<NUM>,\s*){2,}<NUM>`)
 
 // Template is one learned pattern.
 type Template struct {

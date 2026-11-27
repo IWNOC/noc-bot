@@ -373,7 +373,12 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 		}
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "🗒 *この30分のまとめ*（%s〜%s、%d件）\n", now.Add(-digestInterval).In(jst).Format("15:04"), now.In(jst).Format("15:04"), len(items))
+	span := now.Add(-digestInterval).In(jst).Format("15:04") + "〜" + now.In(jst).Format("15:04")
+	if len(items) > 0 {
+		fmt.Fprintf(&sb, "🗒 *この30分のまとめ*（%s、%d件）\n", span, len(items))
+	} else {
+		fmt.Fprintf(&sb, "🗒 *この30分*（%s）：通知するほどの出来事はありませんでした。\n", span)
+	}
 	if gist != "" {
 		sb.WriteString(gist + "\n")
 	}
@@ -385,7 +390,7 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 		sb.WriteString(strings.Join(lines, "\n") + "\n")
 	}
 	if len(findings) > 0 {
-		sb.WriteString("\n🔎 *調べてわかったこと*（AI の調査）\n")
+		sb.WriteString("\n🔎 *調べてわかったこと*（AI の調査・誤りの可能性あり）\n")
 		for _, f := range findings {
 			sb.WriteString("• " + f + "\n")
 		}

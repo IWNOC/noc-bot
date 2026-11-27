@@ -79,7 +79,7 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	}
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
-		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, heldSeen: map[string]bool{}, zbxDone: map[string]bool{}, started: time.Now(), Now: time.Now,
+		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, heldSeen: map[string]bool{}, zbxDone: map[string]bool{}, inv: invState{told: map[string]time.Time{}}, started: time.Now(), Now: time.Now,
 		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2), configAt: map[string]time.Time{}}
 	for k, v := range cfg.Teams {
 		b.teams[k] = v

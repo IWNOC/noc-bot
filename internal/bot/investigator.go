@@ -41,6 +41,7 @@ type invState struct {
 	last     time.Time
 	findings []string
 	urgent   []time.Time
+	told     map[string]time.Time // topic -> when people were last told
 }
 
 const investigatorSystem = `You are noc-bot's investigator, on shift at the NOC of a three-day event network (about 500 participants;
@@ -50,6 +51,8 @@ Nobody tells you what to look at. Each patrol you get a brief of what changed; y
 How to work:
 - Be economical: investigate at most 3 things per patrol, the ones an experienced operator would care about.
   Check notebook_read first; do not re-investigate what the notebook already explains.
+- zabbix_problems and zabbix_items show what monitoring sees from outside (ping, links, client counts, pool usage):
+  check them to tell whether a log pattern matters to users, and note it when logs and Zabbix disagree.
 - Use the tools to get evidence: patterns, raw lines, rates, incidents, web_search / fetch_url (vendor docs first),
   lookup_network for outside AS numbers and public addresses.
 - Write what you learn with notebook_write, so everyone after you knows it:
@@ -288,18 +291,35 @@ func (b *Bot) investigatorTools() []llm.Tool {
 				b.tierMu.Unlock()
 				return fmt.Sprintf("scheduled in %d minutes", a.Minutes), nil
 			}},
-		{Name: "tell_people", Description: "Tell operators something worth knowing that alerts do not already say. Goes into the 30-minute digest; urgent=true posts now (rarely).",
-			Parameters: obj(map[string]any{"text": str("Japanese, 1-3 lines, with the evidence"), "urgent": map[string]any{"type": "boolean"}}, "text"),
+		{Name: "tell_people", Description: "Tell operators ONE thing worth knowing that alerts do not already say. Goes into the 30-minute digest. A topic is told once: telling the same topic again within 3 hours is dropped unless update=true (something really changed).",
+			Parameters: obj(map[string]any{
+				"topic":  str("short key for what this is about, e.g. 'eps-rt-02 logrotate', 'upstream BGP flap'"),
+				"text":   str("Japanese, at most 2 short sentences (about 120 characters): what, and what to do if anything. Plain words; no pattern ids, PIDs, account names or MAC addresses"),
+				"update": map[string]any{"type": "boolean", "description": "true only if this is news about a topic already told"},
+				"urgent": map[string]any{"type": "boolean"}}, "topic", "text"),
 			Run: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var a struct {
-					Text   string
-					Urgent bool
+					Topic, Text    string
+					Update, Urgent bool
 				}
 				json.Unmarshal(raw, &a)
-				t := toMrkdwn(b.inJapanese(ctx, clipText(strings.TrimSpace(a.Text), 600)))
+				t := firstSentences(forChannel(toMrkdwn(b.inJapanese(ctx, strings.TrimSpace(a.Text)))), 200)
 				if t == "" {
 					return "", fmt.Errorf("empty")
 				}
+				topic := strings.ToLower(strings.TrimSpace(a.Topic))
+				b.inv.mu.Lock()
+				last, told := b.inv.told[topic]
+				if told && !a.Update && b.Now().Sub(last) < 3*time.Hour {
+					b.inv.mu.Unlock()
+					return "not sent: people were told about this topic at " + last.In(jst).Format("15:04") + ". Send again only with update=true when something changed.", nil
+				}
+				if len(b.inv.findings) >= 3 {
+					b.inv.mu.Unlock()
+					return "not sent: the next digest already has 3 findings. Keep only what matters most.", nil
+				}
+				b.inv.told[topic] = b.Now()
+				b.inv.mu.Unlock()
 				if a.Urgent && b.urgentAllowed(b.Now()) {
 					if _, err := b.Notify.Post(ctx, "🔎 *調べていて気づいたこと*（AI の調査）\n"+t, ""); err != nil {
 						return "", err

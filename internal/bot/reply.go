@@ -139,3 +139,38 @@ func (b *Bot) friendlyName(ctx context.Context, title, tplID, template string, n
 	}
 	return clipText(template, n)
 }
+
+var (
+	emailRe   = regexp.MustCompile(`[\w.+-]+@[\w-]+(?:\.[\w-]+)+`)
+	macRe     = regexp.MustCompile(`(?i)\b((?:[0-9a-f]{2}[:-]){3})(?:[0-9a-f]{2}[:-]){2}[0-9a-f]{2}\b`)
+	tplRefRe  = regexp.MustCompile(`\s*[（(]?tpl:[0-9a-f@.\w-]+[)）]?`)
+	levelRefs = strings.NewReplacer("FAR ABOVE NORMAL", "いつもよりかなり多い", "ABOVE NORMAL", "いつもより多め", "BELOW NORMAL", "いつもより少なめ")
+)
+
+// forChannel makes investigator text fit a channel everyone reads: no account names, no full
+// client MAC addresses, no internal ids or level names.
+func forChannel(s string) string {
+	s = emailRe.ReplaceAllString(s, "（利用者）")
+	s = macRe.ReplaceAllString(s, "${1}…")
+	s = tplRefRe.ReplaceAllString(s, "")
+	return levelRefs.Replace(s)
+}
+
+// firstSentences keeps whole sentences up to about n characters.
+func firstSentences(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	cut := -1
+	for i := n; i > n/2; i-- {
+		if r[i] == '。' || r[i] == '\n' {
+			cut = i + 1
+			break
+		}
+	}
+	if cut < 0 {
+		return string(r[:n]) + "…"
+	}
+	return strings.TrimSpace(string(r[:cut]))
+}

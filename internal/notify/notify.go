@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -111,6 +112,16 @@ var kindTitle = map[string]string{
 	"window":     "全体のようすがいつもと違う",
 }
 
+var factJA = map[string]string{
+	"frequency": "頻度", "last_hour": "直近1時間の件数", "normal_per_hour": "ふだんの件数（1時間あたり）", "first_seen": "最初に見た時刻",
+	"last_seen": "最後に届いた時刻", "silent_for": "届いていない時間", "expected": "送信元", "skew": "時刻のずれ", "area": "領域",
+}
+
+var listRe = regexp.MustCompile(`((?:<NUM>|\d+),\s*){4,}(?:<NUM>|\d+)?`)
+
+// squeeze shortens long lists of numbers (PID lists and the like) so the line stays readable.
+func squeeze(s string) string { return listRe.ReplaceAllString(s, "<NUM>, <NUM>, … ") }
+
 var levelJA = map[string]string{
 	"FAR ABOVE NORMAL": "普段より大幅に多い",
 	"STOPPED":          "止まった",
@@ -142,7 +153,7 @@ func Render(ev incident.Event, mention string) string {
 		b.WriteString("\n")
 	}
 	if in.Template != "" {
-		fmt.Fprintf(&b, "パターン：`%s`\n", clip(in.Template, 300))
+		fmt.Fprintf(&b, "ログの形：`%s`\n", clip(squeeze(in.Template), 160))
 	}
 	keys := make([]string, 0, len(in.Facts))
 	for k := range in.Facts {
@@ -152,11 +163,17 @@ func Render(ev incident.Event, mention string) string {
 	for _, k := range keys {
 		v := in.Facts[k]
 		if k == "example" {
-			fmt.Fprintf(&b, "例：```%s```\n", clip(v, 500))
+			fmt.Fprintf(&b, "例：```%s```\n", clip(squeeze(v), 300))
 			continue
 		}
+		if k == "backfill" || k == "active_minutes" {
+			continue
+		}
+		if ja, ok := factJA[k]; ok {
+			k = ja
+		}
 		if ja, ok := levelJA[v]; ok {
-			v = v + "（" + ja + "）"
+			v = ja
 		}
 		fmt.Fprintf(&b, "• %s：%s\n", k, v)
 	}

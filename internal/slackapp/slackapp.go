@@ -94,12 +94,10 @@ func (a *App) posted(channel, thread, ts string, err error) {
 
 // PostIncident posts an alert with answer buttons. It returns the message ts (the thread).
 func (a *App) PostIncident(ctx context.Context, incidentID, text, thread string) (string, error) {
-	blocks := []slack.Block{
-		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, clip(text, 2900), false, false), nil, nil),
+	blocks := append(sections(text),
 		a.answerButtons(incidentID),
 		slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType,
-			"判定するとAIの学習に使われます。理由やこの件の事情は、このスレッドに書いてください。", false, false)),
-	}
+			"判定するとAIの学習に使われます。理由やこの件の事情は、このスレッドに書いてください。", false, false)))
 	opts := []slack.MsgOption{slack.MsgOptionText(clip(text, 3000), false), slack.MsgOptionBlocks(blocks...), slack.MsgOptionDisableLinkUnfurl()}
 	if thread != "" {
 		opts = append(opts, slack.MsgOptionTS(thread))
@@ -145,7 +143,7 @@ type DigestItem struct{ ID, Label string }
 
 // PostDigest posts the digest with "すぐ知らせて" and "通知不要" menus over its items.
 func (a *App) PostDigest(ctx context.Context, text string, items []DigestItem) (string, error) {
-	blocks := []slack.Block{slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, clip(text, 2900), false, false), nil, nil)}
+	blocks := sections(text)
 	if len(items) > 0 {
 		var up, mute []*slack.OptionBlockObject
 		for _, it := range items {
@@ -402,4 +400,35 @@ func (a *App) UserName(ctx context.Context, id string) string {
 	names[id] = n
 	nameMu.Unlock()
 	return n
+}
+
+// sections splits a long text into several section blocks at line breaks (a section holds 3000
+// characters), so long messages are shown whole instead of being cut mid-sentence.
+func sections(text string) []slack.Block {
+	var out []slack.Block
+	var cur []string
+	n := 0
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, strings.Join(cur, "\n"), false, false), nil, nil))
+			cur, n = nil, 0
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = clip(line, 2800)
+		l := len([]rune(line)) + 1
+		if n+l > 2800 {
+			flush()
+		}
+		cur = append(cur, line)
+		n += l
+		if len(out) >= 8 {
+			break
+		}
+	}
+	flush()
+	if len(out) == 0 {
+		out = append(out, slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, " ", false, false), nil, nil))
+	}
+	return out
 }
