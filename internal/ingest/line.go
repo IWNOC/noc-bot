@@ -41,10 +41,15 @@ func Parse(s string) (Line, error) {
 	if d, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(f[3], "devtime=")); err == nil {
 		l.Dev = d
 	}
-	rest := f[4]
+	rest := strings.TrimPrefix(f[4], "\ufeff")
 	tag, msg, _ := strings.Cut(rest, " ")
 	l.Program = programOf(tag)
 	l.Msg = strings.TrimLeft(strings.TrimPrefix(msg, "\ufeff"), " ")
+	// Some senders (the wireless manager) put no program tag: the first word is part of the
+	// message ("<42: ...>Wireless"). Keep the whole text as the message.
+	if l.Program == "" || strings.ContainsAny(l.Program, "<>") {
+		l.Program, l.Msg = "-", rest
+	}
 	return l, nil
 }
 

@@ -128,7 +128,7 @@ func (b *Bot) patrolBrief(ctx context.Context, since, now time.Time) string {
 	line := func(t stats.Info) string {
 		m, _ := b.Rules.Template(t.Key.ID)
 		known := ""
-		if _, ok := b.knowledge(ctx, "meaning", "tpl:"+t.Key.ID); ok {
+		if m, _ := b.background(ctx, t.Key.ID, ""); m != "" {
 			known = " [notebook: explained]"
 		}
 		return fmt.Sprintf("- tpl:%s host=%s level=%s lines_last_hour=%d pattern=%q%s", t.Key.ID, m.Host, t.Level, t.LastHour, clipText(m.Text, 160), known)

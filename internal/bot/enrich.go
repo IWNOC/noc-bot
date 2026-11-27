@@ -29,7 +29,12 @@ func (b *Bot) knowledge(ctx context.Context, kind, subject string) (string, bool
 // parties (AS numbers, public addresses) that appear in an example line.
 func (b *Bot) background(ctx context.Context, tplID, example string) (meaning string, ents []string) {
 	if tplID != "" {
-		meaning, _ = b.knowledge(ctx, "meaning", "tpl:"+tplID)
+		var ok bool
+		if meaning, ok = b.knowledge(ctx, "meaning", "tpl:"+tplID); !ok {
+			// notes written before patterns were per host, or for the same message on another host
+			base, _, _ := strings.Cut(tplID, "@")
+			meaning, _ = b.knowledge(ctx, "meaning", "tpl:"+base)
+		}
 	}
 	seen := map[string]bool{}
 	add := func(k string) {

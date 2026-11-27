@@ -45,3 +45,10 @@ func TestParseBad(t *testing.T) {
 		}
 	}
 }
+
+func TestParseNoProgramTag(t *testing.T) {
+	l, err := Parse("2026-11-26T06:35:00Z 10.20.3.19 10.20.3.19 devtime=2026-11-26T06:35:00Z \ufeff<42: 1:2A:3B>Wireless Manager v2026.1 : Start: rogue AP")
+	if err != nil || l.Program != "-" || l.Msg[:4] != "<42:" {
+		t.Fatalf("got %+v %v", l, err)
+	}
+}
