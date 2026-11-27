@@ -20,7 +20,7 @@ var (
 	mdHeading = regexp.MustCompile(`(?m)^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$`)
 	mdLink    = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)`)
 	mdBullet  = regexp.MustCompile(`(?m)^(\s*)[*-]\s+`)
-	footerRe  = regexp.MustCompile(`(?s)\n*_（確かめたこと[:：].*?）_`)
+	footerRe  = regexp.MustCompile(`(?s)\n*_（(?:確かめたこと|確認)[:：].*?）_`)
 )
 
 // toMrkdwn turns the Markdown models write into Slack's mrkdwn. Code blocks are left alone.
@@ -96,4 +96,46 @@ var userRef = regexp.MustCompile(`<@(U[A-Z0-9]+)>`)
 func onlyMentions(text string) bool {
 	t := regexp.MustCompile(`<[@!][^>]+>`).ReplaceAllString(text, "")
 	return strings.TrimSpace(t) == "" && strings.Contains(text, "<")
+}
+
+// sourceWords says what was looked at in people's words, not tool names.
+func sourceWords(tools []string) string {
+	names := map[string]string{
+		"open_incidents": "通知の一覧", "incident_detail": "通知の一覧",
+		"sender_overview": "ログ", "patterns_of_host": "ログ", "recent_lines": "ログ", "pattern_history": "ログの履歴", "pattern_detail": "ログ",
+		"radius_summary":  "RADIUS の集計",
+		"zabbix_problems": "Zabbix", "zabbix_items": "Zabbix",
+		"web_search": "Web", "fetch_url": "Web", "lookup_network": "AS・アドレスの登録情報",
+		"noc_settings": "自分の設定と記憶", "site_notes": "自分の設定と記憶", "known_issues": "既知の問題", "notebook_read": "調査ノート",
+		"slack_groups": "Slack のグループ",
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range tools {
+		if n, ok := names[t]; ok && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, "、")
+}
+
+var impactWords = []string{"なし", "小（一部の人）", "中（多くの人）", "大（全体・中核）"}
+
+// friendlyName is what to call an alert when talking to people: its headline if it has one,
+// else what the investigator learned the message means, else the raw pattern.
+func (b *Bot) friendlyName(ctx context.Context, title, tplID, template string, n int) string {
+	if title != "" {
+		return clipText(title, n)
+	}
+	if m, _ := b.background(ctx, tplID, ""); m != "" {
+		first := m
+		for _, sep := range []string{"。", ". ", "\n"} {
+			if i := strings.Index(first, sep); i > 0 {
+				first = first[:i]
+			}
+		}
+		return clipText(strings.Trim(first, "\"「」 "), n)
+	}
+	return clipText(template, n)
 }

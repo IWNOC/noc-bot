@@ -44,11 +44,13 @@ const agentSystem = `あなたは「noc-bot」です。イベントネットワ�
 - 覚えること・通知の仕方を変えることは、必ず propose_* の道具で提案してください。人が「登録」を押すまで反映されません。押される前に「設定しました」「覚えました」と言ってはいけません。
 - 質問には、道具で確かめてから答えます。道具の結果にないことは「確認できていない」「推測」とはっきり書きます。
 - 数字・IP アドレス・時刻・AS 番号・組織名・人名は、道具の結果から正確に写します。名前を漢字に直したり訳したりしません。
+- 「今どうなっている？」「落ちてる？」のような質問には、ログだけでなく zabbix_problems（監視の障害一覧）と zabbix_items（機器の値：接続台数、使用率、リンク状態など）も見て、まず全体を一言で答えます。ログは機器が自分で言ったこと、Zabbix は外から確かめたことです。
 - 自分の設定や覚えていることを聞かれたら noc_settings を見ます。Slack のチーム（ユーザーグループ）は slack_groups で確かめます。
 - 返事は日本語だけで書きます（中国語・韓国語の語を混ぜない）。まず結論を1〜2行、そのあと必要な根拠だけ。聞かれたことだけに答え、長くても8行。ログをそのまま長く貼らず、要点を書きます。
 - 書式は Slack 用です：太字は *こう*、箇条書きは「• 」、コードやアドレスはバッククォート1つで囲む。Markdown の **太字** や # 見出し、表は使いません。IPv6 アドレスは必ずバッククォートで囲みます。
 - 時刻はすべて JST（noc-bot がログを受け取った時刻）で扱い、JST で書きます。機器が自分で書いた時刻は使いません。
 - 「まだ起きている？」「いつから？」「収まった？」には、必ず pattern_history で時間ごとの件数を見てから答えます。直近数分の件数だけで「収まった」と言ってはいけません。level が NORMAL でも「最近と同じ頻度で続いている」だけで、問題が続いていることがあります。
+- 同僚に話すように、ていねいだけれど硬すぎない言葉で書きます。内部の言葉は使いません：道具の名前（propose_… など）、tpl:… の ID、NORMAL や FAR ABOVE NORMAL、severity の数字はそのまま書かず、「担当の登録」「このログ」「いつもどおりの頻度」「いつもよりかなり多い」「影響は小さい」のように言い換えます。人は ID ではなく名前で呼びます。
 - 同じ提案を何度も繰り返しません。一度断られた・反応がなかった提案は、聞かれるまで出しません。
 - 自分にできないこと（定期実行、Slack 以外への連絡、機器の操作、ログに無い情報）は一言で伝え、長い説明はしません。雑談や冗談には短く付き合って構いませんが、特定の人についての憶測は書きません。
 - 運用者の発言が判定（合っている／誤検知／重要度／担当）や「直さない」「既知」を意味していたら、対応する propose_* を使います。
@@ -124,12 +126,10 @@ func (b *Bot) converse(ctx context.Context, channel, thread, text, user string) 
 	out = toMrkdwn(out)
 	used := make([]string, 0, len(steps))
 	for _, s := range steps {
-		if !strings.HasPrefix(s.Tool, "propose_") { // proposals show as their own cards
-			used = append(used, s.Tool)
-		}
+		used = append(used, s.Tool)
 	}
-	if len(used) > 0 {
-		out += "\n_（確かめたこと: " + strings.Join(dedupe(used), ", ") + "）_"
+	if w := sourceWords(used); w != "" {
+		out += "\n_（確認：" + w + "）_"
 	}
 	if err := pr.PostIn(ctx, channel, thread, out); err != nil {
 		b.Log.Warn("agent reply", "err", err)
@@ -163,6 +163,20 @@ func (b *Bot) agentContext(ctx context.Context, inc *incident.Incident) string {
 	}
 	for _, k := range b.Rules.Known(b.Now()) {
 		fmt.Fprintf(&sb, "known issue %s: %s (until %s)\n", k.ID, k.Reason, k.Expires.In(jst).Format("01/02 15:04"))
+	}
+	if b.Zabbix != nil {
+		if ps, err := b.Zabbix.Problems(ctx); err == nil {
+			n := 0
+			for _, p := range ps {
+				if p.Severity >= 3 && n < 8 {
+					if n == 0 {
+						sb.WriteString("\n## Zabbix（監視）で今出ている障害\n")
+					}
+					fmt.Fprintf(&sb, "- %s: %s（%s、%s から）\n", p.Host, p.Name, p.SeverityName(), p.Since.In(jst).Format("01/02 15:04"))
+					n++
+				}
+			}
+		}
 	}
 	if inc != nil {
 		if mean, ents := b.background(ctx, inc.TplID, inc.Facts["example"]); mean != "" || len(ents) > 0 {

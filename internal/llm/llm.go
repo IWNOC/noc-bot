@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -118,6 +119,7 @@ func (c *Client) Run(ctx context.Context, msgs []Message, tools []Tool, maxSteps
 		byName[t.Name] = t
 	}
 	var steps []Step
+	var said []string // text the model wrote alongside tool calls: part of its answer
 	for i := 0; i <= maxSteps; i++ {
 		offer := tools
 		if i == maxSteps {
@@ -133,7 +135,10 @@ func (c *Client) Run(ctx context.Context, msgs []Message, tools []Tool, maxSteps
 			if m.Content == "" {
 				break
 			}
-			return m.Content, steps, nil
+			return strings.TrimSpace(strings.Join(append(said, m.Content), "\n\n")), steps, nil
+		}
+		if strings.TrimSpace(m.Content) != "" {
+			said = append(said, strings.TrimSpace(m.Content))
 		}
 		msgs = append(msgs, m)
 		for _, tc := range m.ToolCalls {

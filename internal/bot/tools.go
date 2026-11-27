@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/IWNOC/noc-bot/internal/llm"
 	"github.com/IWNOC/noc-bot/internal/stats"
@@ -17,7 +18,7 @@ func (b *Bot) Tools() []llm.Tool {
 		return map[string]any{"type": "object", "properties": props, "required": req}
 	}
 	str := map[string]any{"type": "string"}
-	return []llm.Tool{
+	tools := []llm.Tool{
 		{Name: "open_incidents", Description: "List incidents that are open right now.", Parameters: obj(map[string]any{}),
 			Run: func(context.Context, json.RawMessage) (string, error) {
 				var sb strings.Builder
@@ -135,6 +136,39 @@ func (b *Bot) Tools() []llm.Tool {
 				}
 				return strings.Join(notes, "\n"), nil
 			}},
+		{Name: "radius_summary", Description: "RADIUS authentication results per hour (accepted / rejected), JST: is Wi-Fi login working for people?",
+			Parameters: obj(map[string]any{"hours": map[string]any{"type": "integer", "description": "default 12"}}),
+			Run: func(_ context.Context, raw json.RawMessage) (string, error) {
+				var a struct{ Hours int }
+				json.Unmarshal(raw, &a)
+				if a.Hours <= 0 {
+					a.Hours = 12
+				}
+				now := b.Now()
+				ts, acc, ok1 := b.Stats.Hourly(stats.Key{Kind: "metric", ID: "radius_accept"}, now, a.Hours)
+				_, rej, ok2 := b.Stats.Hourly(stats.Key{Kind: "metric", ID: "radius_reject"}, now, a.Hours)
+				if !ok1 && !ok2 {
+					return "no RADIUS results seen since noc-bot started counting", nil
+				}
+				var sb strings.Builder
+				sb.WriteString("hour (JST): accepted / rejected\n")
+				for i := 0; i < a.Hours; i++ {
+					var x, y uint32
+					var t time.Time
+					if ok1 {
+						x, t = acc[i], ts[i]
+					}
+					if ok2 {
+						y = rej[i]
+					}
+					if t.IsZero() {
+						t = now.Add(-time.Duration(a.Hours-1-i) * time.Hour).Truncate(time.Hour)
+					}
+					fmt.Fprintf(&sb, "%s: %d / %d\n", t.In(jst).Format("02日15時"), x, y)
+				}
+				sb.WriteString("(the current hour is partial; rejects include wrong passwords and misconfigured devices retrying)\n")
+				return sb.String(), nil
+			}},
 		{Name: "known_issues", Description: "Accepted, known issues that should not alert by themselves.", Parameters: obj(map[string]any{}),
 			Run: func(context.Context, json.RawMessage) (string, error) {
 				var sb strings.Builder
@@ -144,6 +178,64 @@ func (b *Bot) Tools() []llm.Tool {
 				return sb.String(), nil
 			}},
 	}
+	if b.Zabbix != nil {
+		tools = append(tools,
+			llm.Tool{Name: "zabbix_problems", Description: "Open problems in the NOC's Zabbix monitoring (ping, links, services, thresholds), newest first: what is actually broken or unreachable right now. Times JST.",
+				Parameters: obj(map[string]any{"host": map[string]any{"type": "string", "description": "only this host (optional)"}}),
+				Run: func(ctx context.Context, raw json.RawMessage) (string, error) {
+					var a struct{ Host string }
+					json.Unmarshal(raw, &a)
+					ps, err := b.Zabbix.Problems(ctx)
+					if err != nil {
+						return "", err
+					}
+					want := ""
+					if a.Host != "" {
+						want, _ = b.Zabbix.HostName(ctx, a.Host)
+						if want == "" {
+							want = a.Host
+						}
+					}
+					var sb strings.Builder
+					n := 0
+					for _, p := range ps {
+						if want != "" && p.Host != want {
+							continue
+						}
+						ack := ""
+						if p.Acked {
+							ack = " (acknowledged)"
+						}
+						fmt.Fprintf(&sb, "%s [%s] %s: %s%s\n", p.Since.In(jst).Format("01/02 15:04 JST"), p.SeverityName(), p.Host, p.Name, ack)
+						if n++; n >= 40 {
+							break
+						}
+					}
+					if n == 0 {
+						return "no open problems in Zabbix" + map[bool]string{true: " for " + want}[want != ""], nil
+					}
+					return sb.String(), nil
+				}},
+			llm.Tool{Name: "zabbix_items", Description: "Latest values in Zabbix (interface status and traffic, CPU, DHCP pool usage, connected client counts...). match filters by item name (try Japanese and English words, e.g. 'Ethernet5', 'client', '端末', 'pool', 'ICMP'). Leave host empty to search every host: use that when you do not know which host holds a number.",
+				Parameters: obj(map[string]any{"host": map[string]any{"type": "string", "description": "optional"}, "match": map[string]any{"type": "string"}}),
+				Run: func(ctx context.Context, raw json.RawMessage) (string, error) {
+					var a struct{ Host, Match string }
+					json.Unmarshal(raw, &a)
+					is, err := b.Zabbix.Items(ctx, a.Host, a.Match)
+					if err != nil {
+						return "", err
+					}
+					var sb strings.Builder
+					for _, i := range is {
+						fmt.Fprintf(&sb, "%s = %s %s (%s)\n", i.Name, clipText(i.Value, 80), i.Units, i.At.In(jst).Format("15:04"))
+					}
+					if sb.Len() == 0 {
+						return "no matching items", nil
+					}
+					return sb.String(), nil
+				}})
+	}
+	return tools
 }
 
 // resolvePattern accepts a pattern id the way models write it: with or without "tpl:", quotes or

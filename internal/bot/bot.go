@@ -29,6 +29,7 @@ import (
 	"github.com/IWNOC/noc-bot/internal/store"
 	"github.com/IWNOC/noc-bot/internal/teacher"
 	"github.com/IWNOC/noc-bot/internal/web"
+	"github.com/IWNOC/noc-bot/internal/zabbix"
 )
 
 // Bot is the running pipeline.
@@ -39,10 +40,11 @@ type Bot struct {
 	Stats     *stats.Tracker
 	Rules     *rules.Engine
 	Incidents *incident.Manager
-	Laya      *laya.Client // nil: no laya
-	LLM       *llm.Client  // nil: no LLM
-	Agent     *llm.Client  // conversation model; nil: use LLM
-	Web       *web.Client  // internet lookups for the conversation agent; nil: none
+	Laya      *laya.Client   // nil: no laya
+	LLM       *llm.Client    // nil: no LLM
+	Agent     *llm.Client    // conversation model; nil: use LLM
+	Web       *web.Client    // internet lookups for the conversation agent; nil: none
+	Zabbix    *zabbix.Client // the NOC's monitoring, read-only; nil: none
 	Notify    notify.Notifier
 	Store     *store.Store
 	Known     *teacher.Known
@@ -54,6 +56,7 @@ type Bot struct {
 	seenPid  map[string]bool     // patterns (template@host) seen since start
 	started  time.Time
 	heldSeen map[string]bool // held batches already shown to people
+	zbxDone  map[string]bool // Zabbix problems already turned into labels
 	teams    map[string]config.Team
 	senders  []config.Sender // added from Slack; checked before the config file's
 	props    map[string]*proposal
@@ -76,7 +79,7 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	}
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
-		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, heldSeen: map[string]bool{}, started: time.Now(), Now: time.Now,
+		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, heldSeen: map[string]bool{}, zbxDone: map[string]bool{}, started: time.Now(), Now: time.Now,
 		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2), configAt: map[string]time.Time{}}
 	for k, v := range cfg.Teams {
 		b.teams[k] = v
@@ -110,6 +113,14 @@ func (b *Bot) Handle(l ingest.Line) {
 	drainNew := m.New
 	b.Stats.Observe(stats.Key{Kind: "template", ID: pid}, l.Recv)
 	b.Stats.Observe(stats.Key{Kind: "sender", ID: l.Host}, l.Recv)
+	if i := strings.Index(l.Msg, "result="); i >= 0 { // RADIUS audit lines: who gets in is user impact
+		switch {
+		case strings.HasPrefix(l.Msg[i+7:], "Accept"):
+			b.Stats.Observe(stats.Key{Kind: "metric", ID: "radius_accept"}, l.Recv)
+		case strings.HasPrefix(l.Msg[i+7:], "Reject"):
+			b.Stats.Observe(stats.Key{Kind: "metric", ID: "radius_reject"}, l.Recv)
+		}
+	}
 	b.mu.Lock()
 	m.New = !b.seenPid[pid]
 	b.seenPid[pid] = true
@@ -214,6 +225,7 @@ func (b *Bot) minute(ctx context.Context, now time.Time) {
 	}
 	b.flushStorm(ctx)
 	b.judgeAttention(ctx, now)
+	go b.zabbixOutcomes(ctx, now)
 	if now.Sub(b.lastDig) >= digestInterval {
 		if !b.lastDig.IsZero() {
 			b.digest(ctx, now)

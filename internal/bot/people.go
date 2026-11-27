@@ -157,17 +157,17 @@ func (b *Bot) OnAnswer(ctx context.Context, incidentID, action, value, user stri
 	b.attended(ctx, in)
 	tierReply := func(tier, msg string) (string, string) {
 		b.setTierFromPerson(ctx, in, tier, user)
-		return fmt.Sprintf("<@%s>：%s を%s", user, tierLabel(in), msg), tierKey(in)
+		return fmt.Sprintf("了解です、<@%s> さん。%s は%s", user, tierLabel(in), msg), tierKey(in)
 	}
 	switch action {
 	case slackapp.ActNow, slackapp.ActRight, slackapp.ActPromote:
 		// "worth telling at once": a strong positive for laya too
 		b.teach(ctx, in, map[string]any{"odd": true}, nil, false, user)
-		return tierReply(TierNow, "、これからはすぐ知らせます。")
+		return tierReply(TierNow, "、これからもすぐお知らせしますね。")
 	case slackapp.ActDigest:
-		return tierReply(TierDigest, "、これからは30分ごとのまとめに載せます。")
+		return tierReply(TierDigest, "、今後は30分ごとのまとめに回します。")
 	case slackapp.ActMute, slackapp.ActMuteSel:
-		return tierReply(TierSilent, "、これからは通知しません（記録と件数は残します）。")
+		return tierReply(TierSilent, "、今後はお知らせしません（記録は残しておきます）。")
 	case slackapp.ActWrong:
 		n := b.teach(ctx, in, map[string]any{"odd": false}, map[string]any{"page_now": false, "severity": 0}, true, user)
 		b.setTierFromPerson(ctx, in, TierSilent, user)

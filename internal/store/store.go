@@ -364,3 +364,25 @@ func (s *Store) SetVerdict(ctx context.Context, desk, subject string, answers ma
 func (s *Store) DropVerdict(ctx context.Context, desk, subject string) {
 	s.db.ExecContext(ctx, `DELETE FROM verdicts WHERE desk=? AND subject=?`, desk, subject)
 }
+
+// LineDecision is a stored line-desk decision.
+type LineDecision struct{ Subject, Text, Answers string }
+
+// LineDecisionsOf lists the line desk's decisions about one host's patterns in a time range.
+func (s *Store) LineDecisionsOf(ctx context.Context, host string, from, to time.Time) ([]LineDecision, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT subject, text, answers FROM decisions WHERE desk='line' AND subject LIKE ? AND at>=? AND at<=? ORDER BY id LIMIT 50`,
+		"%@"+host, ts(from), ts(to))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LineDecision
+	for rows.Next() {
+		var d LineDecision
+		if err := rows.Scan(&d.Subject, &d.Text, &d.Answers); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

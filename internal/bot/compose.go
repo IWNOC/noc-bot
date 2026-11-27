@@ -25,6 +25,7 @@ type LogPoster interface {
 }
 
 const composeSystem = `あなたはイベントネットワークの NOC の運用担当です。検知した出来事を Slack のチャンネルに知らせる投稿を書きます。
+- 同僚に声をかけるように、ふつうの言葉で書く。内部の用語（NORMAL、FAR ABOVE NORMAL、tpl、severity など）は使わず、「いつもよりかなり多い」「初めて見る」のように言う。
 - 読む人は運用者です。何が起きているか、気にすべきか、次に何を見ればよいかが一目でわかるように。
 - 長さは状況に合わせる：よくある軽いものは1〜2行、影響が大きそうなものは影響・見立て・次の一手まで。
 - 事実と推測を分ける。推測には「可能性」「要確認」を付ける。
@@ -64,6 +65,9 @@ func (b *Bot) compose(ctx context.Context, in incident.Incident) (title, body, n
 	}
 	for _, m := range b.memoryAbout(ctx, in.Host) {
 		fmt.Fprintf(&sb, "運用者が教えてくれたこと: %s\n", m)
+	}
+	if z := b.zabbixWords(ctx, in.Host); z != "" {
+		fmt.Fprintf(&sb, "Zabbix（監視）で同じ機器に出ている障害: %s\n", z)
 	}
 	mean, ents := b.background(ctx, in.TplID, ex)
 	if mean != "" {
@@ -145,16 +149,16 @@ func renderComposed(ev incident.Event, title, body, mention string) string {
 	}
 	sb.WriteString("\n" + body + "\n")
 	var meta []string
+	if in.Why != "" {
+		meta = append(meta, "すぐお知らせした理由："+in.Why)
+	}
 	if in.Team != "" {
 		meta = append(meta, "担当："+in.Team)
 	}
-	if in.Severity >= 0 {
-		meta = append(meta, fmt.Sprintf("重要度：%d/3", in.Severity))
+	if in.Severity >= 0 && in.Severity < len(impactWords) {
+		meta = append(meta, "影響："+impactWords[in.Severity])
 	}
-	meta = append(meta, "送信元："+in.Host, "ID："+in.ID)
-	if in.Why != "" {
-		meta = append(meta, "すぐ知らせた理由："+in.Why)
-	}
+	meta = append(meta, in.Host+" ・ "+in.ID)
 	sb.WriteString("_" + strings.Join(meta, "　") + "_")
 	return sb.String()
 }

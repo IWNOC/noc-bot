@@ -23,6 +23,14 @@ type Config struct {
 	Store    Store           `yaml:"store"`
 	Clock    Clock           `yaml:"clock"`
 	Web      Web             `yaml:"web"`
+	Zabbix   Zabbix          `yaml:"zabbix"`
+}
+
+// Zabbix is the NOC's monitoring, read-only: what is actually broken or reachable right now.
+type Zabbix struct {
+	URL      string `yaml:"url"`       // e.g. https://10.20.4.5/zabbix; empty: not used
+	TokenEnv string `yaml:"token_env"` // env var with an API token (read-only role)
+	Insecure bool   `yaml:"insecure"`  // self-signed certificate
 }
 
 // Web lets the conversation agent search the internet (a local SearXNG), read public pages and

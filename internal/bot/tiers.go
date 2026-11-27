@@ -64,6 +64,9 @@ func tierKey(in incident.Incident) string {
 }
 
 func tierLabel(in incident.Incident) string {
+	if in.Title != "" { // the headline people saw, not the raw pattern
+		return in.Host + " の「" + clipText(in.Title, 60) + "」"
+	}
 	if in.Template != "" {
 		return in.Host + " の「" + clipText(in.Template, 60) + "」"
 	}
@@ -162,6 +165,9 @@ func (b *Bot) decideTier(ctx context.Context, in incident.Incident, s rules.Sign
 	case "info":
 		return TierDigest, "", false
 	case "error", "state_change":
+		if ps := b.zabbixOn(ctx, in.Host, in.Opened); len(ps) > 0 {
+			return TierNow, "Zabbix でも同じ機器に障害が出ているため（" + ps[0].Name + "）", false
+		}
 		if b.changedRecently(in.Host, in.Opened) {
 			return TierNow, "同じ機器の設定変更の直後に出たため", false
 		}
@@ -353,10 +359,7 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 	byHost := map[string]int{}
 	for _, in := range items {
 		byHost[in.Host]++
-		title := in.Title
-		if title == "" {
-			title = clipText(in.Template, 80)
-		}
+		title := b.friendlyName(ctx, in.Title, in.TplID, in.Template, 90)
 		fmt.Fprintf(&list, "• %s：%s（%d回）\n", in.Host, title, in.Hits)
 	}
 	gist := ""
@@ -395,11 +398,7 @@ func (b *Bot) digest(ctx context.Context, now time.Time) {
 		if i >= 25 {
 			break
 		}
-		title := in.Title
-		if title == "" {
-			title = in.Template
-		}
-		menu = append(menu, slackapp.DigestItem{ID: in.ID, Label: clipText(in.Host+" "+title, 70)})
+		menu = append(menu, slackapp.DigestItem{ID: in.ID, Label: clipText(in.Host+" "+b.friendlyName(ctx, in.Title, in.TplID, in.Template, 60), 70)})
 	}
 	var ts string
 	var err error

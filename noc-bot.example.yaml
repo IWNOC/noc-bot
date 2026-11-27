@@ -18,6 +18,11 @@ llm:
 slack:
   channel: ""   # channel id; tokens: SLACK_BOT_TOKEN, SLACK_APP_TOKEN
 
+zabbix:                              # read-only: what monitoring says is actually broken
+  url: "https://zabbix.example/zabbix"
+  token_env: ZABBIX_TOKEN            # API token of a read-only user
+  insecure: true                     # self-signed certificate
+
 web:
   searx_url: "http://127.0.0.1:8888"   # local SearXNG for web_search; empty disables web tools
 

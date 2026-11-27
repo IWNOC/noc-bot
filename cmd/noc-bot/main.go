@@ -24,6 +24,7 @@ import (
 	"github.com/IWNOC/noc-bot/internal/store"
 	"github.com/IWNOC/noc-bot/internal/teacher"
 	"github.com/IWNOC/noc-bot/internal/web"
+	"github.com/IWNOC/noc-bot/internal/zabbix"
 )
 
 func main() {
@@ -79,6 +80,9 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.Zabbix.URL != "" && os.Getenv(cfg.Zabbix.TokenEnv) != "" {
+		b.Zabbix = zabbix.New(cfg.Zabbix.URL, os.Getenv(cfg.Zabbix.TokenEnv), cfg.Zabbix.Insecure)
+	}
 	if cfg.Web.SearxURL != "" {
 		b.Web = web.New(cfg.Web.SearxURL)
 	}
