@@ -477,6 +477,9 @@ func (b *Bot) cardText(p *proposal) (string, error) {
 		in := p.Incident
 		scope := map[string]string{"template": "このログのパターンだけ", "program": in.Host + " のこのプログラム", "host": in.Host + " からのログ全部"}[p.Args["scope"].(string)]
 		fmt.Fprintf(&sb, "既知の問題として通知を止める：%s（%s）\n理由：%v\n期限：%v日（期限後はまた通知します。止めている間も件数は数えます）", in.Host, scope, p.Args["reason"], p.Args["days"])
+	case "held":
+		fmt.Fprintf(&sb, "窓口「%v」の質問「%v」で、新しく届いた正解がこれまで学んだ内容と大きく食い違っています。\n理由（laya）：%v\n"+
+			"*登録* ＝ 新しい正解のほうを学ぶ（運用の方針や状況が変わった場合）。*却下* ＝ その分を捨てる（先生役の誤りと思われる場合）。", p.Args["desk"], p.Args["question"], p.Args["why"])
 	case "retract":
 		fmt.Fprintf(&sb, "通知 %s に付けた人の判定を取り消す（学習データから外します。laya の学習済みの状態はイベント後に作り直すときに反映）", p.Incident.ID)
 	case "label":
@@ -508,6 +511,20 @@ func (b *Bot) OnProposal(ctx context.Context, id string, accept bool, user strin
 	b.mu.Unlock()
 	if p == nil {
 		return "この提案はもう処理済みか、noc-bot の再起動で失われました。もう一度お願いします。"
+	}
+	if p.Kind == "held" {
+		desk, q := fmt.Sprint(p.Args["desk"]), fmt.Sprint(p.Args["question"])
+		if b.Laya == nil {
+			return "laya に接続していません。"
+		}
+		if err := b.Laya.ResolveHeld(ctx, desk, q, accept); err != nil {
+			return "laya への反映に失敗しました: " + err.Error()
+		}
+		b.Store.Note(ctx, b.Now(), "held", desk+"/"+q, fmt.Sprintf("accept=%v", accept), user)
+		if accept {
+			return fmt.Sprintf("✅ <@%s> が承認しました：%s / %s の保留分を学習します。", user, desk, q)
+		}
+		return fmt.Sprintf("🗑 <@%s> が破棄しました：%s / %s の保留分は学習しません。", user, desk, q)
 	}
 	if !accept {
 		b.Store.Note(ctx, b.Now(), "rejected", p.Kind, p.Summary, user)

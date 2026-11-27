@@ -146,3 +146,19 @@ func TestSameHostStoryJoinsThread(t *testing.T) {
 		t.Fatalf("another host joined: %q", th)
 	}
 }
+
+func TestTrusted(t *testing.T) {
+	cases := []struct {
+		a    laya.Answer
+		want bool
+	}{
+		{laya.Answer{Source: "teacher"}, true},
+		{laya.Answer{Source: "vega"}, true},                           // laya stood on its own
+		{laya.Answer{Source: "vega", Escalated: "below line"}, false}, // asked the teacher, got nothing
+	}
+	for _, c := range cases {
+		if trusted(c.a) != c.want {
+			t.Errorf("%+v", c.a)
+		}
+	}
+}

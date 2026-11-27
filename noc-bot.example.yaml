@@ -7,6 +7,7 @@ listen:
 laya:
   url: "http://laya-svc:8100"
   token_env: LAYA_SVC_TOKEN
+  live_desks: [line]   # laya answers alone where it has earned trust; other desks stay in shadow
 
 llm:
   url: "https://llm.example/v1"

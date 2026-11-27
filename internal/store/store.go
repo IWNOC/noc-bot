@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY, key TEXT NOT NULL, opened TEXT NOT NULL, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS threads (channel TEXT NOT NULL, ts TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(channel, ts));
+CREATE TABLE IF NOT EXISTS verdicts (desk TEXT NOT NULL, subject TEXT NOT NULL, at TEXT NOT NULL, answers TEXT NOT NULL, PRIMARY KEY(desk, subject));
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL, who TEXT NOT NULL);
 `
@@ -328,4 +329,38 @@ func (s *Store) RetractLabels(ctx context.Context, incidentID string, at time.Ti
 		return 0, err
 	}
 	return r.RowsAffected()
+}
+
+// Verdict returns what the teacher last said about a subject (kept for 3 days).
+func (s *Store) Verdict(ctx context.Context, desk, subject string) (map[string]any, bool) {
+	var at, raw string
+	if err := s.db.QueryRowContext(ctx, `SELECT at, answers FROM verdicts WHERE desk=? AND subject=?`, desk, subject).Scan(&at, &raw); err != nil {
+		return nil, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, at); err != nil || time.Since(t) > 72*time.Hour {
+		return nil, false
+	}
+	m := map[string]any{}
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return nil, false
+	}
+	return m, true
+}
+
+// SetVerdict merges the teacher's answers for a subject.
+func (s *Store) SetVerdict(ctx context.Context, desk, subject string, answers map[string]any) {
+	m, _ := s.Verdict(ctx, desk, subject)
+	if m == nil {
+		m = map[string]any{}
+	}
+	for k, v := range answers {
+		m[k] = v
+	}
+	b, _ := json.Marshal(m)
+	s.db.ExecContext(ctx, `INSERT OR REPLACE INTO verdicts(desk,subject,at,answers) VALUES(?,?,?,?)`, desk, subject, ts(time.Now()), string(b))
+}
+
+// DropVerdict forgets the teacher's verdict for a subject (a person corrected it).
+func (s *Store) DropVerdict(ctx context.Context, desk, subject string) {
+	s.db.ExecContext(ctx, `DELETE FROM verdicts WHERE desk=? AND subject=?`, desk, subject)
 }

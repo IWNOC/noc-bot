@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ type Known struct {
 }
 
 type knownEntry struct {
+	subject string // what the text is about (a pattern id): verdicts are reused per subject
 	answers map[string]any
 	context string // extra facts in words for the LLM
 	at      time.Time
@@ -39,7 +41,7 @@ func NewKnown() *Known {
 }
 
 // Put registers exact answers and context for a text before it is sent to laya.
-func (k *Known) Put(text string, answers map[string]any, context string) {
+func (k *Known) Put(text, subject string, answers map[string]any, context string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	now := k.now()
@@ -48,7 +50,7 @@ func (k *Known) Put(text string, answers map[string]any, context string) {
 			delete(k.m, h)
 		}
 	}
-	k.m[sha256.Sum256([]byte(text))] = knownEntry{answers, context, now}
+	k.m[sha256.Sum256([]byte(text))] = knownEntry{subject, answers, context, now}
 }
 
 func (k *Known) get(text string) (knownEntry, bool) {
@@ -146,6 +148,18 @@ type Teacher struct {
 	Log   *slog.Logger
 	// OnAnswer, when set, is told every answer the teacher gave and its evidence (for the store).
 	OnAnswer func(desk, text string, answers map[string]any, evidence map[string]string)
+	// Verdicts remembers what the teacher said about a subject, so the same pattern gets the same
+	// label next time. (Re-judging 92 patterns flipped "odd" on 30 and "kind" on 44.)
+	Verdicts Verdicts
+	// OnDispute is told the questions the teacher answered differently when asked twice: they are
+	// not taught to laya and are worth a person's eye.
+	OnDispute func(desk, subject, text string, questions []string)
+}
+
+// Verdicts stores the teacher's answers per desk and subject.
+type Verdicts interface {
+	Verdict(ctx context.Context, desk, subject string) (map[string]any, bool)
+	SetVerdict(ctx context.Context, desk, subject string, answers map[string]any)
 }
 
 func (t *Teacher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -194,14 +208,52 @@ func (t *Teacher) Answer(ctx context.Context, req Request) (map[string]any, map[
 	if len(rest) == 0 || t.LLM == nil {
 		return answers, evidence
 	}
-	got, ev, err := t.ask(ctx, req.Desk, req.Text, extra, rest)
-	if err != nil {
-		t.Log.Warn("teacher llm", "desk", req.Desk, "err", err)
-		return answers, evidence
+	subject := ""
+	if e, ok := t.Known.get(req.Text); ok {
+		subject = e.subject
 	}
-	for q, v := range got {
-		answers[q] = v
-		evidence[q] = ev[q]
+	// the same subject keeps the label it got before
+	if subject != "" && t.Verdicts != nil {
+		if prev, ok := t.Verdicts.Verdict(ctx, req.Desk, subject); ok {
+			for q, qq := range rest {
+				if v, ok := prev[q]; ok {
+					if vv, ok := qq.valid(v); ok {
+						answers[q], evidence[q] = vv, "same verdict as before for this pattern"
+						delete(rest, q)
+					}
+				}
+			}
+		}
+	}
+	if len(rest) > 0 {
+		// ask twice; only what both answers agree on is a label
+		got, ev, err := t.ask(ctx, req.Desk, req.Text, extra, rest)
+		if err != nil {
+			t.Log.Warn("teacher llm", "desk", req.Desk, "err", err)
+			return answers, evidence
+		}
+		again, _, err2 := t.ask(ctx, req.Desk, req.Text, extra, rest)
+		var disputed []string
+		fresh := map[string]any{}
+		for q, v := range got {
+			if err2 != nil {
+				continue // no second opinion: teach nothing rather than a coin flip
+			}
+			if w, ok := again[q]; !ok || fmt.Sprint(w) != fmt.Sprint(v) {
+				disputed = append(disputed, q)
+				continue
+			}
+			answers[q], evidence[q], fresh[q] = v, ev[q], v
+		}
+		if len(disputed) > 0 {
+			sort.Strings(disputed)
+			if t.OnDispute != nil {
+				t.OnDispute(req.Desk, subject, req.Text, disputed)
+			}
+		}
+		if subject != "" && t.Verdicts != nil && len(fresh) > 0 {
+			t.Verdicts.SetVerdict(ctx, req.Desk, subject, fresh)
+		}
 	}
 	// A line the teacher itself calls routine (noise/info) is not odd, whatever it said about odd:
 	// keep its labels consistent so laya does not learn to over-alert from the teacher.

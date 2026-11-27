@@ -53,6 +53,7 @@ type Bot struct {
 	judged   map[string]bool     // template ids the line desk has decided or that are queued for it
 	seenPid  map[string]bool     // patterns (template@host) seen since start
 	started  time.Time
+	heldSeen map[string]bool // held batches already shown to people
 	teams    map[string]config.Team
 	senders  []config.Sender // added from Slack; checked before the config file's
 	props    map[string]*proposal
@@ -75,7 +76,7 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	}
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
-		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, started: time.Now(), Now: time.Now,
+		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, heldSeen: map[string]bool{}, started: time.Now(), Now: time.Now,
 		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2), configAt: map[string]time.Time{}}
 	for k, v := range cfg.Teams {
 		b.teams[k] = v
@@ -185,9 +186,9 @@ func (b *Bot) Run(ctx context.Context, lines <-chan ingest.Line) {
 		case <-tick.C:
 			n++
 			b.minute(ctx, b.Now())
-			if n%5 == 0 && b.Laya != nil {
-				go b.window(ctx, b.Now())
-			}
+			// the window desk is no longer asked: it never opened useful alerts and cost a teacher
+			// call every five minutes; the 30-minute digest covers "how does the whole look"
+
 			if n%10 == 0 {
 				b.saveTemplates(ctx)
 			}
@@ -216,6 +217,7 @@ func (b *Bot) minute(ctx context.Context, now time.Time) {
 	if now.Sub(b.lastDig) >= digestInterval {
 		if !b.lastDig.IsZero() {
 			b.digest(ctx, now)
+			go b.checkHeld(ctx)
 		}
 		b.lastDig = now
 	}
@@ -246,7 +248,7 @@ func (b *Bot) open(ctx context.Context, in incident.Incident, s rules.Signal) {
 	// answers only fill in the team and the severity shown; they never decide who is paged.
 	if b.Laya != nil {
 		stateText := b.incidentState(in, sender, "")
-		b.Known.Put(stateText, map[string]any{}, "")
+		b.Known.Put(stateText, "", map[string]any{}, "")
 		go func() {
 			lctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
@@ -319,7 +321,10 @@ func (b *Bot) releaseLLM() { <-b.llmSlots }
 // trusted: an answer we act on. While desks run in shadow mode the served answer is the teacher's
 // (rules or the LLM with evidence); a vega answer is used only when laya routes it to auto.
 func trusted(a laya.Answer) bool {
-	return a.Source == "teacher" || a.Route == "auto"
+	// the teacher's answer, or laya's own where the Escalator let it stand (it earned trust on that
+	// question and was not sent to the teacher). A laya answer that was escalated but got no
+	// teacher reply is not acted on.
+	return a.Source == "teacher" || a.Route == "auto" || (a.Source == "vega" && a.Escalated == "")
 }
 
 func (b *Bot) post(ctx context.Context, ev incident.Event) {
@@ -408,7 +413,7 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 	if known != nil {
 		exact["odd"] = false
 	}
-	b.Known.Put(text, exact, "")
+	b.Known.Put(text, s.TplID, exact, "")
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	d, err := b.Laya.Decide(ctx, "line", text)

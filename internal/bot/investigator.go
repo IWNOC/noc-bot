@@ -82,10 +82,9 @@ func (b *Bot) patrol(ctx context.Context, now time.Time) {
 		b.inv.mu.Unlock()
 	}()
 	lm := b.agentLLM()
-	if lm == nil || !b.acquireLLM(ctx, 2*time.Minute) {
-		return
+	if lm == nil {
+		return // (patrols do not take an alert-writing slot: alerts must not wait behind them)
 	}
-	defer b.releaseLLM()
 	if since.IsZero() {
 		since = now.Add(-patrolEvery)
 	}

@@ -68,6 +68,9 @@ type Client struct {
 	URL   string
 	Token string
 	HTTP  *http.Client
+	// Live lists desks where laya may answer alone once it has earned trust on a question (the
+	// Escalator's measured line). Other desks stay in shadow: the teacher answers everything.
+	Live map[string]bool
 }
 
 // New returns a client with the given timeout (decisions can wait on the teacher, so allow a minute+).
@@ -122,8 +125,50 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 // Decide asks a desk.
 func (c *Client) Decide(ctx context.Context, desk, text string) (Decision, error) {
 	var d Decision
-	err := c.post(ctx, "/v1/desks/"+desk+"/decide", map[string]any{"text": text}, &d)
+	body := map[string]any{"text": text}
+	if c.Live[desk] {
+		body["shadow"] = false
+	}
+	err := c.post(ctx, "/v1/desks/"+desk+"/decide", body, &d)
 	return d, err
+}
+
+// Held lists the learning batches a desk is holding for a person: question -> why.
+func (c *Client) Held(ctx context.Context, desk string) (map[string]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/v1/desks/"+desk+"/held", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "noc-bot/0.1")
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("laya-svc held: HTTP %d", resp.StatusCode)
+	}
+	raw := map[string]any{}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for k, v := range raw {
+		out[k] = fmt.Sprint(v)
+	}
+	return out, nil
+}
+
+// ResolveHeld accepts (learn it) or discards a held batch.
+func (c *Client) ResolveHeld(ctx context.Context, desk, question string, accept bool) error {
+	verb := "discard"
+	if accept {
+		verb = "accept"
+	}
+	return c.post(ctx, "/v1/desks/"+desk+"/held/"+question+"/"+verb, map[string]any{}, nil)
 }
 
 // Origin of a label.

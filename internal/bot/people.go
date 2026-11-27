@@ -225,6 +225,10 @@ func (b *Bot) teach(ctx context.Context, in incident.Incident, lineAns, incAns m
 			return
 		}
 		b.Store.Label(ctx, b.Now(), desk, text, ans, laya.OriginHuman, user, correction, "incident "+in.ID)
+		if desk == "line" {
+			// a person's answer replaces the teacher's verdict for this pattern from now on
+			b.Store.SetVerdict(ctx, desk, subject, ans)
+		}
 		if b.Laya == nil {
 			return
 		}
@@ -372,6 +376,42 @@ func (b *Bot) postCardIn(ctx context.Context, channel, thread, id, text string) 
 	if pr, ok := b.Notify.(Proposer); ok {
 		if err := pr.PostProposalIn(ctx, channel, thread, id, text); err != nil {
 			b.Log.Warn("post card", "err", err)
+		}
+	}
+}
+
+var heldDesks = []string{"line", "incident", "comment"}
+
+// checkHeld shows people the learning batches laya is holding (data that sharply disagrees with
+// what it learned so far). Nobody could see these: two incident questions and one window question
+// sat held, and learning on them stopped.
+func (b *Bot) checkHeld(ctx context.Context) {
+	if b.Laya == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	for _, desk := range heldDesks {
+		held, err := b.Laya.Held(ctx, desk)
+		if err != nil {
+			continue
+		}
+		for q, why := range held {
+			key := desk + "/" + q + "/" + why
+			b.mu.Lock()
+			seen := b.heldSeen[key]
+			b.heldSeen[key] = true
+			b.mu.Unlock()
+			if seen {
+				continue
+			}
+			p := &proposal{ID: newID(), Kind: "held", Args: map[string]any{"desk": desk, "question": q, "why": why},
+				Summary: "laya の学習が保留になっています（" + desk + " / " + q + "）", User: "noc-bot", At: b.Now()}
+			card, _ := b.cardText(p)
+			b.mu.Lock()
+			b.props[p.ID] = p
+			b.mu.Unlock()
+			b.postCardIn(ctx, "", "", p.ID, card)
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,6 +50,10 @@ func run(cfgPath string, log *slog.Logger) error {
 	var ly *laya.Client
 	if cfg.Laya.URL != "" {
 		ly = laya.New(cfg.Laya.URL, os.Getenv(cfg.Laya.TokenEnv), cfg.Laya.Timeout)
+		ly.Live = map[string]bool{}
+		for _, d := range cfg.Laya.Live {
+			ly.Live[d] = true
+		}
 	}
 	var lm *llm.Client
 	if cfg.LLM.URL != "" {
@@ -108,7 +113,10 @@ func run(cfgPath string, log *slog.Logger) error {
 		}()
 	}
 
-	tc := &teacher.Teacher{Token: os.Getenv("NOC_BOT_TEACHER_TOKEN"), Known: b.Known, LLM: lm, Tools: b.Tools(), Log: log,
+	tc := &teacher.Teacher{Token: os.Getenv("NOC_BOT_TEACHER_TOKEN"), Known: b.Known, LLM: lm, Tools: b.Tools(), Log: log, Verdicts: st,
+		OnDispute: func(desk, subject, text string, qs []string) {
+			st.Note(context.Background(), time.Now(), "disputed", desk+":"+subject, strings.Join(qs, ","), "teacher")
+		},
 		OnAnswer: func(desk, text string, answers map[string]any, evidence map[string]string) {
 			ev, _ := json.Marshal(evidence)
 			st.Label(context.Background(), time.Now(), desk, text, answers, "teacher", "noc-bot", false, string(ev))

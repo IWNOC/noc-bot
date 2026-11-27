@@ -261,3 +261,38 @@ func TestTeamProposalNeedsRealGroup(t *testing.T) {
 		t.Fatalf("host rule not applied: %+v", s)
 	}
 }
+
+// A held learning batch is shown once, and the person's choice reaches laya.
+func TestHeldBatchSurfacedAndResolved(t *testing.T) {
+	var got []string
+	ly := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/incident/held"):
+			w.Write([]byte(`{"area":"the heads agree with this batch 17% of the time"}`))
+		case strings.Contains(r.URL.Path, "/held/"):
+			got = append(got, r.URL.Path)
+			w.Write([]byte(`{}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer ly.Close()
+	b, fs, _, _ := setup(t, "{}")
+	b.Laya = laya.New(ly.URL, "", 5*time.Second)
+	b.checkHeld(context.Background())
+	b.checkHeld(context.Background()) // not shown twice
+	if len(fs.cards) != 1 {
+		t.Fatalf("cards %d", len(fs.cards))
+	}
+	for id, card := range fs.cards {
+		if !strings.Contains(card, "食い違って") {
+			t.Fatalf("card %q", card)
+		}
+		if out := b.OnProposal(context.Background(), id, false, "U1"); !strings.Contains(out, "破棄") {
+			t.Fatalf("%q", out)
+		}
+	}
+	if len(got) != 1 || !strings.HasSuffix(got[0], "/incident/held/area/discard") {
+		t.Fatalf("laya calls %v", got)
+	}
+}

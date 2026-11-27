@@ -79,6 +79,7 @@ type Laya struct {
 	URL      string        `yaml:"url"`       // laya-svc, e.g. http://laya-svc:8100
 	TokenEnv string        `yaml:"token_env"` // env var holding the bearer token
 	Timeout  time.Duration `yaml:"timeout"`
+	Live     []string      `yaml:"live_desks"` // desks where laya answers alone once it earned trust
 }
 
 type LLM struct {
