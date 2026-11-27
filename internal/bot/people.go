@@ -108,6 +108,23 @@ func (b *Bot) senderFor(from, host string) config.Sender {
 
 // loadLearned restores known issues, teams and sender rules people added in Slack.
 func (b *Bot) loadLearned(ctx context.Context) {
+	// tier rules made before patterns were per host: move "tpl:<id>" to "tpl:<id>@<host>"
+	// (the host is the start of the rule's label)
+	if tr := b.tierRules(ctx); len(tr) > 0 {
+		changed := false
+		for k, r := range tr {
+			if strings.HasPrefix(k, "tpl:") && !strings.Contains(k, "@") {
+				if host, _, ok := strings.Cut(r.Label, " の「"); ok && host != "" {
+					tr[k+"@"+host] = r
+					delete(tr, k)
+					changed = true
+				}
+			}
+		}
+		if changed {
+			b.Store.PutJSON(ctx, "tiers", tr)
+		}
+	}
 	var known []config.KnownIssue
 	if ok, err := b.Store.GetJSON(ctx, "known_issues", &known); ok && err == nil {
 		for _, k := range known {

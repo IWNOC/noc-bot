@@ -30,6 +30,8 @@ const composeSystem = `あなたはイベントネットワークの NOC の運�
 - 事実と推測を分ける。推測には「可能性」「要確認」を付ける。
 - 数字・IP アドレス・時刻を書くときは、与えられた情報か道具の結果にあるものを正確に写す（書かなくてもよい）。
 - 生のログは貼らない（スレッドに別に添付される）。
+- 日本語だけで書く。書式は Slack 用（太字は *こう*、箇条書きは「• 」）。Markdown の **太字** や見出しは使わない。
+- 時刻は JST で書く。
 - 運用者が教えてくれたこと（記憶）があれば踏まえる。
 出来事の種類の意味（言い換えて強くしないこと）:
 - rate: あるログのパターンが普段よりずっと多く出ている
@@ -97,7 +99,11 @@ func (b *Bot) compose(ctx context.Context, in incident.Incident) (title, body, n
 		b.Log.Warn("compose: dropped, values not in the evidence", "incident", in.ID, "values", bad)
 		return "", "", "", false
 	}
-	return strings.TrimSpace(got.Title), strings.TrimSpace(got.Body), got.Title + " " + got.Body, true
+	title, body = strings.TrimSpace(got.Title), strings.TrimSpace(got.Body)
+	if fixed := b.inJapanese(ctx, body); fixed != body && len(ungrounded(fixed, corpus)) == 0 {
+		body = fixed
+	}
+	return strings.Trim(toMrkdwn(title), "*"), toMrkdwn(body), title + " " + body, true
 }
 
 var valueRe = regexp.MustCompile(`(?i)` +

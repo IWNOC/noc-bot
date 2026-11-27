@@ -192,13 +192,13 @@ func (e *Engine) Evaluate(now time.Time) []Signal {
 		out = append(out, Signal{Kind: KindRate, Key: "rate:" + in.Key.ID, Host: m.Host, From: m.From, Template: m.Text, TplID: m.ID,
 			Level: in.Level, At: now, Facts: map[string]string{
 				"last_hour": fmt.Sprint(in.LastHour), "normal_per_hour": fmt.Sprintf("%.1f", in.Baseline), "active_minutes": fmt.Sprint(in.ActiveMin),
-				"first_seen": in.FirstSeen.UTC().Format(time.RFC3339), "example": m.Example}})
+				"first_seen": jstTime(in.FirstSeen), "example": m.Example}})
 	}
 	// any sender that normally talks a lot and went quiet: no list needed, the baseline says it
 	for _, in := range e.tr.All("sender", now) {
 		if in.Level == stats.LevelStopped {
 			out = append(out, Signal{Kind: KindSilence, Key: "silence:" + in.Key.ID, Host: in.Key.ID, Level: stats.LevelStopped, At: now,
-				Facts: map[string]string{"normal_per_hour": fmt.Sprintf("%.0f", in.Baseline), "last_seen": in.LastSeen.UTC().Format(time.RFC3339)}})
+				Facts: map[string]string{"normal_per_hour": fmt.Sprintf("%.0f", in.Baseline), "last_seen": jstTime(in.LastSeen)}})
 		}
 	}
 	e.mu.Lock()
@@ -224,7 +224,7 @@ func (e *Engine) Evaluate(now time.Time) []Signal {
 			facts := map[string]string{"expected": x.Host, "silent_for": "never seen since noc-bot started"}
 			if !last.IsZero() {
 				facts["silent_for"] = now.Sub(last).Round(time.Minute).String()
-				facts["last_seen"] = last.UTC().Format(time.RFC3339)
+				facts["last_seen"] = jstTime(last)
 			}
 			out = append(out, Signal{Kind: KindSilence, Key: "silence:" + x.Host, Host: host, Level: stats.LevelStopped, At: now, Facts: facts})
 		}
@@ -303,4 +303,9 @@ func (e *Engine) SuppressedCounts() map[string]uint64 {
 		out[k] = v
 	}
 	return out
+}
+
+// jstTime prints a time for people and models: JST, which is what the NOC reads.
+func jstTime(t time.Time) string {
+	return t.In(time.FixedZone("JST", 9*3600)).Format("01/02 15:04:05 JST")
 }

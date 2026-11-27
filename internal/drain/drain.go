@@ -23,6 +23,9 @@ var masks = []struct {
 	re  *regexp.Regexp
 	tok string
 }{
+	// account names: keep people's names out of patterns (and out of Slack), and let lines that
+	// differ only by user share a pattern
+	{regexp.MustCompile(`(?i)\b(user(?:name)?|for user|login)=\S+`), "$1=<USER>"},
 	{regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`), "<TS>"},
 	{regexp.MustCompile(`(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b`), "<MAC>"},
 	// IPv6: compressed (contains "::") or full (at least five groups), so clock times like 10:33:23 stay

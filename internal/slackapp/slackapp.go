@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -368,4 +369,37 @@ func (a *App) PostLogs(ctx context.Context, thread, title, logs string) error {
 	a.Log.Info("snippet upload failed, posting logs as a reply (add files:write to the app for snippets)", "err", err)
 	_, err = a.Post(ctx, title+"\n```"+clip(logs, 3500)+"```", thread)
 	return err
+}
+
+// BotUserID is noc-bot's own Slack user id.
+func (a *App) BotUserID() string { return a.botUser }
+
+var (
+	nameMu sync.Mutex
+	names  = map[string]string{}
+)
+
+// UserName returns a person's display name (cached; the id itself if it cannot be looked up).
+func (a *App) UserName(ctx context.Context, id string) string {
+	nameMu.Lock()
+	n, ok := names[id]
+	nameMu.Unlock()
+	if ok {
+		return n
+	}
+	n = id
+	if u, err := a.API.GetUserInfoContext(ctx, id); err == nil {
+		switch {
+		case u.Profile.DisplayName != "":
+			n = u.Profile.DisplayName
+		case u.RealName != "":
+			n = u.RealName
+		case u.Name != "":
+			n = u.Name
+		}
+	}
+	nameMu.Lock()
+	names[id] = n
+	nameMu.Unlock()
+	return n
 }

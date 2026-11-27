@@ -65,3 +65,26 @@ func TestBurstySenderNeverStopped(t *testing.T) {
 		t.Fatalf("bursty sender reported STOPPED")
 	}
 }
+
+func TestHourlyHistoryAndSnapshot(t *testing.T) {
+	tr := NewTracker()
+	k := Key{"template", "bgp"}
+	start := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	now := feed(tr, k, start, 180, 1) // 60/h for 3 hours
+	now = feed(tr, k, now, 120, 0)    // quiet for 2 hours
+	snap, err := tr.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr2 := NewTracker()
+	if err := tr2.Restore(snap); err != nil {
+		t.Fatal(err)
+	}
+	_, cs, ok := tr2.Hourly(k, now.Add(-time.Second), 5)
+	if !ok || cs[0] != 60 || cs[2] != 60 || cs[3] != 0 || cs[4] != 0 {
+		t.Fatalf("hourly %v", cs)
+	}
+	if i, _ := tr2.Get(k, now); i.Baseline == 0 || i.Total != 180 {
+		t.Fatalf("baseline not restored: %+v", i)
+	}
+}

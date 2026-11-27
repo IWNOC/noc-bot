@@ -51,6 +51,8 @@ type Bot struct {
 	mu       sync.Mutex
 	examples map[string][]string // template id -> recent raw lines
 	judged   map[string]bool     // template ids the line desk has decided or that are queued for it
+	seenPid  map[string]bool     // patterns (template@host) seen since start
+	started  time.Time
 	teams    map[string]config.Team
 	senders  []config.Sender // added from Slack; checked before the config file's
 	props    map[string]*proposal
@@ -73,7 +75,7 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	}
 	b := &Bot{Cfg: cfg, Log: log, Miner: drain.New(0.5), Stats: tr, Rules: re, Incidents: incident.NewManager(),
 		Laya: ly, LLM: lm, Notify: nt, Store: st, Known: teacher.NewKnown(),
-		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, Now: time.Now,
+		lineQ: make(chan rules.Signal, 1000), examples: map[string][]string{}, judged: map[string]bool{}, seenPid: map[string]bool{}, started: time.Now(), Now: time.Now,
 		teams: map[string]config.Team{}, props: map[string]*proposal{}, llmSlots: make(chan struct{}, 2), configAt: map[string]time.Time{}}
 	for k, v := range cfg.Teams {
 		b.teams[k] = v
@@ -81,6 +83,11 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 	b.loadLearned(context.Background())
 	if done, err := st.Subjects(context.Background(), "line", statebuilder.Version); err == nil {
 		b.judged = done
+	}
+	if snap, err := st.Get(context.Background(), "stats"); err == nil && snap != nil {
+		if err := b.Stats.Restore(snap); err != nil {
+			log.Warn("stats restore", "err", err)
+		}
 	}
 	if snap, err := st.Get(context.Background(), "drain"); err == nil && snap != nil {
 		if err := b.Miner.Restore(snap); err != nil {
@@ -95,14 +102,23 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 // Handle processes one log line. Cheap: runs on the ingest path.
 func (b *Bot) Handle(l ingest.Line) {
 	m := b.Miner.Add(l.Program, l.Msg)
-	b.Stats.Observe(stats.Key{Kind: "template", ID: m.ID}, l.Recv)
+	// A pattern belongs to the host that sent it. Sharing one id across hosts attributed five
+	// switches' lines to whichever host was seen first (the investigator caught this).
+	pid := m.ID + "@" + l.Host
+	m.ID = pid
+	drainNew := m.New
+	b.Stats.Observe(stats.Key{Kind: "template", ID: pid}, l.Recv)
 	b.Stats.Observe(stats.Key{Kind: "sender", ID: l.Host}, l.Recv)
 	b.mu.Lock()
-	ex := append(b.examples[m.ID], l.Raw)
-	if len(ex) > 5 {
-		ex = ex[len(ex)-5:]
+	m.New = !b.seenPid[pid]
+	b.seenPid[pid] = true
+	// lines are kept with the time we received them, in JST: senders' own clocks are not trusted
+	// (some send JST labelled as UTC), and two clocks in one line confused every reader
+	ex := append(b.examples[pid], fmt.Sprintf("%s %s %s: %s", l.Recv.In(jst).Format("01/02 15:04:05 JST"), l.Host, l.Program, l.Msg))
+	if len(ex) > 8 {
+		ex = ex[len(ex)-8:]
 	}
-	b.examples[m.ID] = ex
+	b.examples[pid] = ex
 	b.mu.Unlock()
 	b.noteConfigChange(l.Host, l.Msg, l.Recv)
 	meta := rules.TemplateMeta{ID: m.ID, Text: m.Template, Program: l.Program, Host: l.Host, From: l.From, Example: l.Msg}
@@ -126,6 +142,14 @@ func (b *Bot) Handle(l ingest.Line) {
 			return
 		}
 		sig = &rules.Signal{Kind: rules.KindNew, Key: "new:" + m.ID, Host: l.Host, From: l.From, Template: m.Template, TplID: m.ID, At: l.Recv}
+	}
+	// Soon after a start, patterns that are only new to this process (not to the miner) are a
+	// backlog being judged again: learn from them, but do not alert on old news.
+	if !drainNew && b.Now().Sub(b.started) < 2*time.Hour {
+		if sig.Facts == nil {
+			sig.Facts = map[string]string{}
+		}
+		sig.Facts["backfill"] = "1"
 	}
 	select {
 	case b.lineQ <- *sig:
@@ -200,6 +224,11 @@ func (b *Bot) minute(ctx context.Context, now time.Time) {
 }
 
 func (b *Bot) saveTemplates(ctx context.Context) {
+	if snap, err := b.Stats.Snapshot(); err == nil {
+		if err := b.Store.Put(ctx, "stats", snap); err != nil {
+			b.Log.Warn("save stats", "err", err)
+		}
+	}
 	if snap, err := b.Miner.Snapshot(); err == nil {
 		if err := b.Store.Put(ctx, "drain", snap); err != nil {
 			b.Log.Warn("save templates", "err", err)
@@ -400,7 +429,7 @@ func (b *Bot) line(ctx context.Context, s rules.Signal) {
 		return
 	}
 	v, ok := odd.Bool()
-	if !ok || !v || !trusted(odd) {
+	if !ok || !v || !trusted(odd) || s.Facts["backfill"] == "1" {
 		return
 	}
 	// laya (or its teacher) thinks this pattern is strange: open an incident and check later

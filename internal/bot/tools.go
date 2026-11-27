@@ -23,7 +23,7 @@ func (b *Bot) Tools() []llm.Tool {
 				var sb strings.Builder
 				for _, in := range b.Incidents.Open() {
 					fmt.Fprintf(&sb, "%s kind=%s host=%s since=%s hits=%d pattern=%q\n", in.ID, in.Kind, in.Host,
-						in.Opened.UTC().Format("15:04Z"), in.Hits, in.Template)
+						in.Opened.In(jst).Format("01/02 15:04 JST"), in.Hits, in.Template)
 				}
 				if sb.Len() == 0 {
 					return "no open incidents", nil
@@ -41,7 +41,40 @@ func (b *Bot) Tools() []llm.Tool {
 				}
 				return sb.String(), nil
 			}},
-		{Name: "patterns_of_host", Description: "Log patterns a host sent, with their level against normal and an example line.",
+		{Name: "pattern_history", Description: "Hour-by-hour counts of one log pattern (up to 72 hours, JST) and its latest lines. USE THIS for 'is it still happening', 'since when', 'when did it stop'. A pattern can be level NORMAL and still be an ongoing problem: NORMAL only means 'as often as recently'.",
+			Parameters: obj(map[string]any{"template": str, "hours": map[string]any{"type": "integer", "description": "how far back, default 24"}}, "template"),
+			Run: func(_ context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Template string
+					Hours    int
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				id := b.resolvePattern(a.Template)
+				if a.Hours <= 0 {
+					a.Hours = 24
+				}
+				now := b.Now()
+				ts, cs, ok := b.Stats.Hourly(stats.Key{Kind: "template", ID: id}, now, a.Hours)
+				if !ok {
+					return "", fmt.Errorf("no pattern %s (ids come from patterns_of_host)", id)
+				}
+				m, _ := b.Rules.Template(id)
+				in, _ := b.Stats.Get(stats.Key{Kind: "template", ID: id}, now)
+				var sb strings.Builder
+				fmt.Fprintf(&sb, "pattern on %s: %s\nnow: %s. first seen %s, last seen %s, last 5 min: %d\ncounts per hour (JST, hour starting at):\n",
+					m.Host, m.Text, now.In(jst).Format("01/02 15:04 JST"), in.FirstSeen.In(jst).Format("01/02 15:04"), in.LastSeen.In(jst).Format("01/02 15:04:05"), in.Last5Min)
+				for i := range ts {
+					fmt.Fprintf(&sb, "%s=%d ", ts[i].In(jst).Format("02日15時"), cs[i])
+				}
+				sb.WriteString("\n(history starts when noc-bot began counting; the current hour is partial)\nlatest lines:\n")
+				b.mu.Lock()
+				sb.WriteString(strings.Join(b.examples[id], "\n"))
+				b.mu.Unlock()
+				return sb.String(), nil
+			}},
+		{Name: "patterns_of_host", Description: "Log patterns a host sent: id, level against the recent normal, counts, when last seen. Times are JST.",
 			Parameters: obj(map[string]any{"host": str}, "host"),
 			Run: func(_ context.Context, raw json.RawMessage) (string, error) {
 				var a struct{ Host string }
@@ -55,7 +88,8 @@ func (b *Bot) Tools() []llm.Tool {
 					if !ok || m.Host != a.Host {
 						continue
 					}
-					fmt.Fprintf(&sb, "[%s] hour=%d pattern=%q example=%q\n", t.Level, t.LastHour, m.Text, m.Example)
+					fmt.Fprintf(&sb, "tpl:%s [%s] last_hour=%d normal_per_hour=%.0f last_seen=%s pattern=%q\n", t.Key.ID, t.Level, t.LastHour, t.Baseline,
+						t.LastSeen.In(jst).Format("01/02 15:04 JST"), m.Text)
 					if n++; n >= 30 {
 						break
 					}
@@ -65,7 +99,7 @@ func (b *Bot) Tools() []llm.Tool {
 				}
 				return sb.String(), nil
 			}},
-		{Name: "recent_lines", Description: "The last few raw lines of the patterns a host sent that are away from normal.",
+		{Name: "recent_lines", Description: "The last few lines (received time, JST) of the patterns a host sent that are away from normal.",
 			Parameters: obj(map[string]any{"host": str}, "host"),
 			Run: func(_ context.Context, raw json.RawMessage) (string, error) {
 				var a struct{ Host string }
@@ -110,4 +144,20 @@ func (b *Bot) Tools() []llm.Tool {
 				return sb.String(), nil
 			}},
 	}
+}
+
+// resolvePattern accepts a pattern id the way models write it: with or without "tpl:", quotes or
+// the "@host" part. Without the host, the busiest pattern with that template id is used.
+func (b *Bot) resolvePattern(raw string) string {
+	id := strings.TrimPrefix(strings.Trim(strings.TrimSpace(raw), "\"'`[]"), "tpl:")
+	if _, ok := b.Rules.Template(id); ok {
+		return id
+	}
+	base, _, _ := strings.Cut(id, "@")
+	for _, t := range b.Stats.All("template", b.Now()) { // busiest first
+		if strings.HasPrefix(t.Key.ID, base+"@") {
+			return t.Key.ID
+		}
+	}
+	return id
 }

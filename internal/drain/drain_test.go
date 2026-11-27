@@ -48,7 +48,7 @@ func TestIDStableAcrossGeneralisationAndRestore(t *testing.T) {
 
 func TestMask(t *testing.T) {
 	got := Mask("user=x mac=92:3a:cd:f8:5c:4b ip 10.1.2.3 v6 2001:d90:30:0:e541::1 n=42")
-	want := "user=x mac=<MAC> ip <IP> v6 <IP6> n=<NUM>"
+	want := "user=<USER> mac=<MAC> ip <IP> v6 <IP6> n=<NUM>"
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
 	}

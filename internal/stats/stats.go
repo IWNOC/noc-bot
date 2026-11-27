@@ -4,6 +4,7 @@
 package stats
 
 import (
+	"encoding/json"
 	"math"
 	"sort"
 	"sync"
@@ -32,12 +33,16 @@ type Series struct {
 	FirstSeen time.Time
 	LastSeen  time.Time
 	Total     uint64
-	baseline  float64          // events per hour, exponentially smoothed
-	baseHours float64          // hours of history behind the baseline
-	baseHist  [minutes]float64 // baseline as it was at each of the last 60 minutes
-	active    float64          // share of minutes with at least one event (smoothed): how steady it talks
-	folded    float64          // events folded into the baseline so far
+	baseline  float64           // events per hour, exponentially smoothed
+	baseHours float64           // hours of history behind the baseline
+	baseHist  [minutes]float64  // baseline as it was at each of the last 60 minutes
+	active    float64           // share of minutes with at least one event (smoothed): how steady it talks
+	folded    float64           // events folded into the baseline so far
+	hours     [histHours]uint32 // events per clock hour, for "is it still happening / since when"
+	curHour   int64             // unix hour of hours[curHour%histHours]
 }
+
+const histHours = 72
 
 func (s *Series) roll(now time.Time) {
 	m := now.Unix() / 60
@@ -51,8 +56,45 @@ func (s *Series) roll(now time.Time) {
 	}
 }
 
+func (s *Series) rollHour(now time.Time) {
+	h := now.Unix() / 3600
+	if s.curHour == 0 || h-s.curHour >= histHours {
+		if s.curHour != 0 {
+			s.hours = [histHours]uint32{}
+		}
+		s.curHour = h
+		return
+	}
+	for s.curHour < h {
+		s.curHour++
+		s.hours[s.curHour%histHours] = 0
+	}
+}
+
+// Hourly returns the counts of the last n clock hours, oldest first, with the hour each starts at.
+func (s *Series) Hourly(now time.Time, n int) ([]time.Time, []uint32) {
+	if n > histHours {
+		n = histHours
+	}
+	h := now.Unix() / 3600
+	var ts []time.Time
+	var cs []uint32
+	for i := n - 1; i >= 0; i-- {
+		x := h - int64(i)
+		var c uint32
+		if s.curHour != 0 && x <= s.curHour && s.curHour-x < histHours {
+			c = s.hours[x%histHours]
+		}
+		ts = append(ts, time.Unix(x*3600, 0))
+		cs = append(cs, c)
+	}
+	return ts, cs
+}
+
 func (s *Series) add(now time.Time) {
 	s.roll(now)
+	s.rollHour(now)
+	s.hours[s.curHour%histHours]++
 	s.buckets[s.cur%minutes]++
 	if s.FirstSeen.IsZero() {
 		s.FirstSeen = now
@@ -249,4 +291,60 @@ func (t *Tracker) All(kind string, now time.Time) []Info {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastHour > out[j].LastHour })
 	return out
+}
+
+// Hourly returns one series' hourly history (see Series.Hourly).
+func (t *Tracker) Hourly(k Key, now time.Time, n int) ([]time.Time, []uint32, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.series[k]
+	if s == nil {
+		return nil, nil, false
+	}
+	ts, cs := s.Hourly(now, n)
+	return ts, cs, true
+}
+
+// saved is the on-disk form of a series.
+type saved struct {
+	Key       Key
+	Buckets   [minutes]uint32
+	Cur       int64
+	FirstSeen time.Time
+	LastSeen  time.Time
+	Total     uint64
+	Baseline  float64
+	BaseHours float64
+	BaseHist  [minutes]float64
+	Active    float64
+	Folded    float64
+	Hours     [histHours]uint32
+	CurHour   int64
+}
+
+// Snapshot serialises every series, so baselines and history survive a restart. (Without it every
+// deploy made all patterns "new" again and blinded the rate rules for hours.)
+func (t *Tracker) Snapshot() ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]saved, 0, len(t.series))
+	for k, s := range t.series {
+		out = append(out, saved{k, s.buckets, s.cur, s.FirstSeen, s.LastSeen, s.Total, s.baseline, s.baseHours, s.baseHist, s.active, s.folded, s.hours, s.curHour})
+	}
+	return json.Marshal(out)
+}
+
+// Restore loads a snapshot.
+func (t *Tracker) Restore(b []byte) error {
+	var in []saved
+	if err := json.Unmarshal(b, &in); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, x := range in {
+		t.series[x.Key] = &Series{buckets: x.Buckets, cur: x.Cur, FirstSeen: x.FirstSeen, LastSeen: x.LastSeen, Total: x.Total,
+			baseline: x.Baseline, baseHours: x.BaseHours, baseHist: x.BaseHist, active: x.Active, folded: x.Folded, hours: x.Hours, curHour: x.CurHour}
+	}
+	return nil
 }

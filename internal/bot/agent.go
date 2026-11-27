@@ -45,7 +45,12 @@ const agentSystem = `あなたは「noc-bot」です。イベントネットワ�
 - 質問には、道具で確かめてから答えます。道具の結果にないことは「確認できていない」「推測」とはっきり書きます。
 - 数字・IP アドレス・時刻・AS 番号・組織名・人名は、道具の結果から正確に写します。名前を漢字に直したり訳したりしません。
 - 自分の設定や覚えていることを聞かれたら noc_settings を見ます。Slack のチーム（ユーザーグループ）は slack_groups で確かめます。
-- 返事は自然な日本語で、短く。必要なら箇条書き。ログをそのまま長く貼らず、要点を書きます。
+- 返事は日本語だけで書きます（中国語・韓国語の語を混ぜない）。まず結論を1〜2行、そのあと必要な根拠だけ。聞かれたことだけに答え、長くても8行。ログをそのまま長く貼らず、要点を書きます。
+- 書式は Slack 用です：太字は *こう*、箇条書きは「• 」、コードやアドレスはバッククォート1つで囲む。Markdown の **太字** や # 見出し、表は使いません。IPv6 アドレスは必ずバッククォートで囲みます。
+- 時刻はすべて JST（noc-bot がログを受け取った時刻）で扱い、JST で書きます。機器が自分で書いた時刻は使いません。
+- 「まだ起きている？」「いつから？」「収まった？」には、必ず pattern_history で時間ごとの件数を見てから答えます。直近数分の件数だけで「収まった」と言ってはいけません。level が NORMAL でも「最近と同じ頻度で続いている」だけで、問題が続いていることがあります。
+- 同じ提案を何度も繰り返しません。一度断られた・反応がなかった提案は、聞かれるまで出しません。
+- 自分にできないこと（定期実行、Slack 以外への連絡、機器の操作、ログに無い情報）は一言で伝え、長い説明はしません。雑談や冗談には短く付き合って構いませんが、特定の人についての憶測は書きません。
 - 運用者の発言が判定（合っている／誤検知／重要度／担当）や「直さない」「既知」を意味していたら、対応する propose_* を使います。
 - ログのメッセージの意味、機器やソフトの仕様、エラーの原因の一般論は、web_search と fetch_url で調べられます（メーカーの公式資料を優先）。調べたときは出典の URL を書きます。検索語には IP アドレスや MAC アドレスを入れず、メッセージ名やログのパターンで検索します。
 - BGP の相手やログに出てくる外部のアドレスが誰か気になったら lookup_network（AS 番号・グローバル IP から組織名、PeeringDB、連絡先）を使います。
@@ -60,6 +65,9 @@ func (b *Bot) OnMention(ctx context.Context, channel, thread, text, user string)
 func (b *Bot) OnThreadReply(ctx context.Context, channel, thread, text, user string) {
 	if _, ok := b.Incidents.ByThread(thread); !ok && !b.Store.IsThread(ctx, channel, thread) {
 		return
+	}
+	if onlyMentions(text) {
+		return // someone calling a colleague into the thread, not talking to noc-bot
 	}
 	b.converse(ctx, channel, thread, text, user)
 }
@@ -93,7 +101,13 @@ func (b *Bot) converse(ctx context.Context, channel, thread, text, user string) 
 		}
 	}
 
-	msgs := []llm.Message{{Role: "system", Content: agentSystem + "\n\n" + b.agentContext(ctx, inc)}}
+	self := ""
+	if id, ok := b.Notify.(Identity); ok && id.BotUserID() != "" {
+		self = "\n\n## あなた自身\nあなたの Slack 上のユーザーは <@" + id.BotUserID() + ">（noc-bot）です。この ID へのメンションは、あなたへの呼びかけです。" +
+			"会話に出てくる人は「名前(<@ID>)」の形で示されます。人を呼ぶときは <@ID> と書きます。" +
+			"あなたは Go で書かれたプログラム（noc-bot）で、判断に laya とローカル LLM を使っています。表示や機能の不具合は開発者に伝えるよう案内します。"
+	}
+	msgs := []llm.Message{{Role: "system", Content: agentSystem + self + "\n\n" + b.agentContext(ctx, inc)}}
 	msgs = append(msgs, b.history(ctx, channel, thread, text, user)...)
 	tools := append(b.Tools(), b.agentTools(channel, thread, user, text, inc)...)
 	out, steps, err := b.agentLLM().Run(ctx, msgs, tools, 6, 1500, false)
@@ -103,11 +117,18 @@ func (b *Bot) converse(ctx context.Context, channel, thread, text, user string) 
 	case len([]rune(strings.TrimSpace(out))) < 2:
 		out = "答えが途中で切れました。もう一度お願いします。"
 	}
-	if n := len(steps); n > 0 {
-		used := make([]string, 0, n)
-		for _, s := range steps {
+	out = stripFooter(out)
+	if err == nil {
+		out = b.inJapanese(ctx, out)
+	}
+	out = toMrkdwn(out)
+	used := make([]string, 0, len(steps))
+	for _, s := range steps {
+		if !strings.HasPrefix(s.Tool, "propose_") { // proposals show as their own cards
 			used = append(used, s.Tool)
 		}
+	}
+	if len(used) > 0 {
 		out += "\n_（確かめたこと: " + strings.Join(dedupe(used), ", ") + "）_"
 	}
 	if err := pr.PostIn(ctx, channel, thread, out); err != nil {
@@ -163,18 +184,25 @@ func (b *Bot) history(ctx context.Context, channel, thread, text, user string) [
 			turns = t
 		}
 	}
+	who := func(id string) string {
+		if n, ok := b.Notify.(Identity); ok {
+			return fmt.Sprintf("%s(<@%s>)", n.UserName(ctx, id), id)
+		}
+		return "<@" + id + ">"
+	}
 	var out []llm.Message
 	last := ""
 	for _, t := range turns {
 		if t.Bot {
-			out = append(out, llm.Message{Role: "assistant", Content: clipText(t.Text, 3000)})
+			// without the footer: the model copied it into its own answers
+			out = append(out, llm.Message{Role: "assistant", Content: clipText(stripFooter(t.Text), 3000)})
 		} else {
-			out = append(out, llm.Message{Role: "user", Content: fmt.Sprintf("<@%s>: %s", t.User, clipText(t.Text, 3000))})
+			out = append(out, llm.Message{Role: "user", Content: who(t.User) + ": " + clipText(t.Text, 3000)})
 			last = t.Text
 		}
 	}
 	if last != text { // the history did not include the message we were called for
-		out = append(out, llm.Message{Role: "user", Content: fmt.Sprintf("<@%s>: %s", user, text)})
+		out = append(out, llm.Message{Role: "user", Content: who(user) + ": " + text})
 	}
 	return out
 }
@@ -246,7 +274,7 @@ func (b *Bot) agentTools(channel, thread, user, comment string, inc *incident.In
 				ex := strings.Join(b.examples[in.TplID], "\n")
 				b.mu.Unlock()
 				return fmt.Sprintf("id=%s kind=%s host=%s team=%s severity=%d opened=%s hits=%d state=%s\npattern=%s\nfacts=%s\nrecent lines:\n%s",
-					in.ID, in.Kind, in.Host, in.Team, in.Severity, in.Opened.UTC().Format(time.RFC3339), in.Hits, in.State, in.Template, facts, ex), nil
+					in.ID, in.Kind, in.Host, in.Team, in.Severity, in.Opened.In(jst).Format("01/02 15:04:05 JST"), in.Hits, in.State, in.Template, facts, ex), nil
 			}},
 		{Name: "propose_memory", Description: "Propose to remember a lasting fact about the site (a device's role, who owns what, what is normal here, a cause found).",
 			Parameters: obj(map[string]any{"fact": str("the fact, Japanese, self-contained"), "summary": summary}, "fact", "summary"),
