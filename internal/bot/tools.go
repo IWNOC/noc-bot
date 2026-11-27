@@ -68,9 +68,12 @@ func (b *Bot) Tools() []llm.Tool {
 				fmt.Fprintf(&sb, "pattern on %s: %s\nnow: %s. first seen %s, last seen %s, last 5 min: %d\ncounts per hour (JST, hour starting at):\n",
 					m.Host, m.Text, now.In(jst).Format("01/02 15:04 JST"), in.FirstSeen.In(jst).Format("01/02 15:04"), in.LastSeen.In(jst).Format("01/02 15:04:05"), in.Last5Min)
 				for i := range ts {
+					if ts[i].Add(time.Hour).Before(b.countSince) {
+						continue // before counting began: unknown, not zero
+					}
 					fmt.Fprintf(&sb, "%s=%d ", ts[i].In(jst).Format("02日15時"), cs[i])
 				}
-				sb.WriteString("\n(history starts when noc-bot began counting; the current hour is partial)\nlatest lines:\n")
+				fmt.Fprintf(&sb, "\nIMPORTANT: counting began at %s. Nothing is known about earlier hours: do NOT say the pattern started then. For earlier times use search_logs, past_alerts or notebook_search, or say it is unknown. The current hour is partial.\nlatest lines:\n", b.countSince.In(jst).Format("01/02 15:04 JST"))
 				b.mu.Lock()
 				sb.WriteString(strings.Join(b.examples[id], "\n"))
 				b.mu.Unlock()
@@ -278,9 +281,12 @@ func (b *Bot) Tools() []llm.Tool {
 					if t.IsZero() {
 						t = now.Add(-time.Duration(a.Hours-1-i) * time.Hour).Truncate(time.Hour)
 					}
+					if t.Add(time.Hour).Before(b.countSince) {
+						continue
+					}
 					fmt.Fprintf(&sb, "%s: %d / %d\n", t.In(jst).Format("02日15時"), x, y)
 				}
-				sb.WriteString("(the current hour is partial; rejects include wrong passwords and misconfigured devices retrying)\n")
+				fmt.Fprintf(&sb, "(counting began at %s, earlier hours are unknown; the current hour is partial; rejects include wrong passwords and misconfigured devices retrying)\n", b.countSince.In(jst).Format("01/02 15:04 JST"))
 				return sb.String(), nil
 			}},
 		{Name: "known_issues", Description: "Accepted, known issues that should not alert by themselves.", Parameters: obj(map[string]any{}),

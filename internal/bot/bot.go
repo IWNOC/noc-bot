@@ -53,28 +53,29 @@ type Bot struct {
 	Store     *store.Store
 	Known     *teacher.Known
 
-	lineQ    chan rules.Signal
-	mu       sync.Mutex
-	examples map[string][]string // template id -> recent raw lines
-	judged   map[string]bool     // template ids the line desk has decided or that are queued for it
-	seenPid  map[string]bool     // patterns (template@host) seen since start
-	started  time.Time
-	heldSeen map[string]bool // held batches already shown to people
-	zbxDone  map[string]bool // Zabbix problems already turned into labels
-	lineBuf  []store.Line    // received lines waiting to be stored (kept a few days for later questions)
-	lastHand time.Time
-	asked    map[string]bool // patterns already put before people in a digest
-	teams    map[string]config.Team
-	senders  []config.Sender // added from Slack; checked before the config file's
-	props    map[string]*proposal
-	llmSlots chan struct{}
-	tierMu   sync.Mutex
-	nowPosts []time.Time
-	stormQ   []incident.Incident
-	configAt map[string]time.Time
-	lastDig  time.Time
-	inv      invState
-	Now      func() time.Time
+	lineQ      chan rules.Signal
+	mu         sync.Mutex
+	examples   map[string][]string // template id -> recent raw lines
+	judged     map[string]bool     // template ids the line desk has decided or that are queued for it
+	seenPid    map[string]bool     // patterns (template@host) seen since start
+	started    time.Time
+	heldSeen   map[string]bool // held batches already shown to people
+	zbxDone    map[string]bool // Zabbix problems already turned into labels
+	lineBuf    []store.Line    // received lines waiting to be stored (kept a few days for later questions)
+	lastHand   time.Time
+	countSince time.Time       // when hourly counting began; earlier hours are unknown, not zero
+	asked      map[string]bool // patterns already put before people in a digest
+	teams      map[string]config.Team
+	senders    []config.Sender // added from Slack; checked before the config file's
+	props      map[string]*proposal
+	llmSlots   chan struct{}
+	tierMu     sync.Mutex
+	nowPosts   []time.Time
+	stormQ     []incident.Incident
+	configAt   map[string]time.Time
+	lastDig    time.Time
+	inv        invState
+	Now        func() time.Time
 }
 
 // New builds a bot from its parts.
@@ -92,6 +93,11 @@ func New(cfg *config.Config, log *slog.Logger, st *store.Store, ly *laya.Client,
 		b.teams[k] = v
 	}
 	b.loadLearned(context.Background())
+	// hourly counts exist only from when this way of counting began (patterns per host)
+	if ok, _ := st.GetJSON(context.Background(), "count_since_v2", &b.countSince); !ok {
+		b.countSince = time.Now()
+		st.PutJSON(context.Background(), "count_since_v2", b.countSince)
+	}
 	if done, err := st.Subjects(context.Background(), "line", statebuilder.Version); err == nil {
 		b.judged = done
 	}
